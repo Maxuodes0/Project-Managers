@@ -27,4 +27,6 @@ jobs:
           PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
           MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
           SUB_DB_NAME: ${{ secrets.SUB_DB_NAME }} # لو ما عندك هذا السيكرت، عادي يطلع undefined
+          TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
+
         run: node src/index.js
