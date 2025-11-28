@@ -1,6 +1,9 @@
 import { Client } from "@notionhq/client";
 import "dotenv/config";
 
+// ثابت لاسم الداتابيس الفرعية داخل صفحة المدير
+const CHILD_DB_TITLE = "مشاريعك";
+
 // نقرأ المتغيرات من الـ Environment (تيجي من GitHub Secrets)
 const notionToken = process.env.NOTION_TOKEN;
 const projectsDbId = process.env.PROJECTS_DB;
@@ -41,17 +44,17 @@ function getPageTitle(page) {
 }
 
 /**
- * تلاقي أو تنشئ صفحة مدير في داتا بيس "مدراء المشاريع"
+ * تلاقي صفحة مدير في داتا بيس "مدراء المشاريع"
  * تعتمد على الحقل: "اسم مدير المشروع" كـ title
+ * ما عاد ننشئ صفحة جديدة، لو مافيه → نحذر ونعدّي
  */
-async function findOrCreateManagerPage(managerName) {
+async function findManagerPage(managerName) {
   if (managerPageCache.has(managerName)) {
     return managerPageCache.get(managerName);
   }
 
   console.log(`\n🔎 Looking for manager page in "مدراء المشاريع": ${managerName}`);
 
-  // نحاول نلقاها
   const search = await notion.databases.query({
     database_id: managersDbId,
     filter: {
@@ -71,81 +74,26 @@ async function findOrCreateManagerPage(managerName) {
     return pageId;
   }
 
-  // ما لقينا، ننشئ صفحة جديدة
-  console.log(`➕ Creating new manager page: ${managerName}`);
-  const newPage = await notion.pages.create({
-    parent: { database_id: managersDbId },
-    properties: {
-      "اسم مدير المشروع": {
-        title: [
-          {
-            type: "text",
-            text: { content: managerName },
-          },
-        ],
-      },
-    },
-  });
-
-  const newId = newPage.id;
-  console.log(`✅ Created manager page: ${managerName} (${newId})`);
-  managerPageCache.set(managerName, newId);
-  return newId;
+  console.warn(
+    `⚠️ No manager page found in "مدراء المشاريع" for "${managerName}".` +
+      ` Make sure you created it using your template.`
+  );
+  return null;
 }
 
 /**
- * لو ما فيه child_database داخل صفحة المدير، ننشئ وحدة جديدة
+ * تلاقي داتا بيس "مشاريعك" داخل صفحة المدير
+ * نبحث عن child_database عنوانه CHILD_DB_TITLE
+ * لو ما لقينا → ما ننشئ، بس نحذر
  */
-async function createChildProjectsDatabase(managerPageId) {
-  console.log(
-    `   ➕ Creating new child database "مشاريعك" under manager page: ${managerPageId}`
-  );
-
-  const db = await notion.databases.create({
-    parent: { page_id: managerPageId },
-    title: [
-      {
-        type: "text",
-        text: { content: "مشاريعك" },
-      },
-    ],
-    properties: {
-      "اسم المشروع": {
-        title: {},
-      },
-      "حالة المشروع": {
-        select: {
-          options: [],
-        },
-      },
-      "المتبقي": {
-        number: {},
-      },
-    },
-  });
-
-  const child = {
-    id: db.id,
-    title: "مشاريعك",
-  };
-
-  console.log(
-    `   ✅ Created child database "مشاريعك" (ID: ${child.id}) under manager page ${managerPageId}`
-  );
-
-  return child;
-}
-
-/**
- * تلاقي أول child_database داخل صفحة المدير
- * لو ما لقت → تنشئ داتا بيس "مشاريعك" جديدة
- */
-async function findOrCreateChildProjectsDatabase(managerPageId) {
+async function findChildProjectsDatabase(managerPageId) {
   if (managerChildDbCache.has(managerPageId)) {
     return managerChildDbCache.get(managerPageId);
   }
 
-  console.log(`   🔍 Looking for child database under manager page: ${managerPageId}`);
+  console.log(
+    `   🔍 Looking for child database "${CHILD_DB_TITLE}" under manager page: ${managerPageId}`
+  );
 
   let cursor;
   let found = null;
@@ -159,11 +107,15 @@ async function findOrCreateChildProjectsDatabase(managerPageId) {
 
     for (const block of children.results) {
       if (block.type === "child_database") {
-        found = {
-          id: block.id,
-          title: block.child_database.title,
-        };
-        break;
+        const title = block.child_database.title;
+        console.log(`   • Found child_database block with title: "${title}"`);
+        if (title === CHILD_DB_TITLE) {
+          found = {
+            id: block.id,
+            title,
+          };
+          break;
+        }
       }
     }
 
@@ -173,21 +125,21 @@ async function findOrCreateChildProjectsDatabase(managerPageId) {
 
   if (!found) {
     console.warn(
-      `   ⚠️ No child_database found under manager page ${managerPageId}. Will create one.`
+      `   ⚠️ No child_database titled "${CHILD_DB_TITLE}" found under manager page ${managerPageId}.` +
+        ` Make sure your template adds this database inside the manager page.`
     );
-    found = await createChildProjectsDatabase(managerPageId);
-  } else {
-    console.log(
-      `   ✅ Found child database "${found.title}" under manager page (${managerPageId})`
-    );
+    return null;
   }
 
+  console.log(
+    `   ✅ Using child database "${found.title}" (ID: ${found.id}) under manager page (${managerPageId})`
+  );
   managerChildDbCache.set(managerPageId, found);
   return found;
 }
 
 /**
- * تلاقي أو تنشئ صف مشروع داخل داتا بيس "مشاريعك" الخاصة بالمدير
+ * تلاقي أو تحدّث صف مشروع داخل داتا بيس "مشاريعك" الخاصة بالمدير
  * - نعتمد على عنوان المشروع "اسم المشروع" كـ مفتاح
  * - نحدّث حالة المشروع والمتبقي
  */
@@ -268,8 +220,8 @@ async function upsertProjectInManagerDb({
  * - تمر على كل المشاريع في داتا بيس "المشاريع"
  * - لكل مشروع تجيب المدير/المدراء من حقل "مدير المشروع" (relation)
  * - لكل مدير:
- *   - تلاقي/تنشئ صفحة في "مدراء المشاريع"
- *   - تلاقي/تنشئ داتا بيس "مشاريعك" داخل الصفحة
+ *   - تلاقي صفحة في "مدراء المشاريع" (موجودة مسبقًا من التيمبليت)
+ *   - تلاقي داتا بيس "مشاريعك" داخل الصفحة (موجودة مسبقًا من التيمبليت)
  *   - تضيف/تحدّث صف المشروع فيها
  */
 async function syncProjectsToManagers() {
@@ -329,19 +281,25 @@ async function syncProjectsToManagers() {
           `   👤 Handling manager from relation: ${managerName} (${managerRelPageId})`
         );
 
-        // 1) تلاقي أو تنشئ صفحة في داتا بيس "مدراء المشاريع"
-        const managerPageId = await findOrCreateManagerPage(managerName);
-
-        // 2) تلاقي أو تنشئ child database (مشاريعك) داخل صفحة المدير
-        const childDb = await findOrCreateChildProjectsDatabase(managerPageId);
-        if (!childDb) {
+        // 1) نلقى صفحة في داتا بيس "مدراء المشاريع" (لا ننشئ جديدة)
+        const managerPageId = await findManagerPage(managerName);
+        if (!managerPageId) {
           console.log(
-            `   ⚠️ Could not get or create child database under manager "${managerName}", skipping.`
+            `   ⚠️ Manager page not found for "${managerName}", skipping this manager.`
           );
           continue;
         }
 
-        // 3) تضيف/تحدّث صف المشروع في داتا بيس "مشاريعك"
+        // 2) نلقى داتا بيس "مشاريعك" داخل صفحة المدير (لا ننشئ جديدة)
+        const childDb = await findChildProjectsDatabase(managerPageId);
+        if (!childDb) {
+          console.log(
+            `   ⚠️ Child database "${CHILD_DB_TITLE}" not found under manager "${managerName}", skipping.`
+          );
+          continue;
+        }
+
+        // 3) نضيف/نحدّث صف المشروع في داتا بيس "مشاريعك"
         await upsertProjectInManagerDb({
           managerName,
           childDb,
