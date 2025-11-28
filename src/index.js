@@ -5,7 +5,7 @@ import "dotenv/config";
 const notionToken = process.env.NOTION_TOKEN;
 const projectsDbId = process.env.PROJECTS_DB;
 const managersDbId = process.env.MANAGERS_DB;
-const subDbName = process.env.SUB_DB_NAME; // اسم الداتابيس الفرعية داخل صفحة كل مدير (اختياري)
+const subDbName = process.env.SUB_DB_NAME; // نستخدمه بس للعرض في اللوق، مو فلتر
 
 if (!notionToken) {
   console.error("❌ NOTION_TOKEN is missing. Please set it in GitHub Secrets.");
@@ -61,7 +61,7 @@ function getPageTitle(page) {
  * دالة تمر على داتا بيس مدراء المشاريع
  * وتدخل على صفحة كل مدير
  * وتدور على أي child database داخل الصفحة
- * وتطبع الحقول حقها
+ * وتطبع الحقول حقها بدون أي فلتر
  */
 async function logSubDatabasesForManagers() {
   if (!managersDbId) {
@@ -72,9 +72,7 @@ async function logSubDatabasesForManagers() {
   console.log("\n======================================");
   console.log("🔍 Scanning manager pages for sub-databases...");
   console.log(
-    `Target sub DB name (SUB_DB_NAME): ${
-      subDbName || "no filter (will log ALL child databases)"
-    }`
+    `SUB_DB_NAME from env (for info only): ${subDbName || "(not set)"}`
   );
   console.log("======================================");
 
@@ -116,12 +114,8 @@ async function logSubDatabasesForManagers() {
               `    → Found child database: "${childTitle}" (ID: ${childDbId})`
             );
 
-            // لو SUB_DB_NAME فاضي -> نطبع كل الداتابيس
-            // لو فيه قيمة -> نفلتر عليها
-            if (!subDbName || childTitle === subDbName) {
-              const label = `Sub DB "${childTitle}" under manager "${managerName}"`;
-              await logDatabaseSchema(childDbId, label);
-            }
+            const label = `Sub DB "${childTitle}" under manager "${managerName}"`;
+            await logDatabaseSchema(childDbId, label);
           }
         }
 
