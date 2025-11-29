@@ -11,6 +11,14 @@ const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID;
 const PROJECT_MANAGER_FIELD = "مدير المشروع"; // اسم الحقل EXACT
 const CHILD_DB_TITLE = "مشاريعك"; // اسم داتابيس المشاريع داخل التيمبليت
 
+// نضمن توفر المتغيرات الأساسية
+const REQUIRED_ENV = ["NOTION_TOKEN", "PROJECTS_DB", "MANAGERS_DB", "TEMPLATE_PAGE_ID"];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    throw new Error(`❌ متغير البيئة ${key} مفقود. أضفه قبل التشغيل.`);
+  }
+}
+
 // ======================
 // جلب عنوان أي صفحة
 // ======================
@@ -22,6 +30,65 @@ function getPageTitle(page) {
     }
   }
   return "بدون عنوان";
+}
+
+// ======================
+// جلب كل البلوكات مع التصفح
+// ======================
+async function fetchAllBlocks(blockId) {
+  const results = [];
+  let cursor;
+
+  do {
+    const res = await notion.blocks.children.list({
+      block_id: blockId,
+      page_size: 50,
+      start_cursor: cursor,
+    });
+
+    results.push(...res.results);
+    cursor = res.has_more ? res.next_cursor : null;
+  } while (cursor);
+
+  return results;
+}
+
+// نبني بلوك جديد فقط بالخصائص المدعومة مع نسخ الأطفال
+async function buildBlockTree(block) {
+  const { type } = block;
+
+  // child_page / child_database لا يمكن نسخها بنفس الطريقة
+  if (!type || type === "child_page" || type === "child_database") {
+    return null;
+  }
+
+  if (!block[type]) return null;
+
+  const cloned = {
+    type,
+    [type]: { ...block[type] },
+  };
+
+  // إزالة حقول ميتا غير مسموحة
+  delete cloned[type].id;
+  delete cloned[type].created_time;
+  delete cloned[type].last_edited_time;
+  delete cloned[type].last_edited_by;
+  delete cloned[type].created_by;
+
+  if (block.has_children) {
+    const children = await fetchAllBlocks(block.id);
+    const mapped = [];
+
+    for (const child of children) {
+      const childTree = await buildBlockTree(child);
+      if (childTree) mapped.push(childTree);
+    }
+
+    if (mapped.length) cloned.children = mapped;
+  }
+
+  return cloned;
 }
 
 // ======================
@@ -51,6 +118,58 @@ async function findChildProjectsDb(managerPageId) {
 }
 
 // ======================
+// تجهيز خصائص داتابيس مشاريعك (مأخوذة من قاعدة المشاريع الأصلية)
+// ======================
+let cachedProjectDbProps = null;
+async function getProjectDbPropertiesForSubDb() {
+  if (cachedProjectDbProps) return cachedProjectDbProps;
+
+  const mainDb = await notion.databases.retrieve({ database_id: PROJECTS_DB });
+  const required = [
+    { target: "اسم المشروع", source: "اسم المشروع" },
+    { target: "حالة المشروع", source: "حالة المشروع" },
+    { target: "المتبقي", source: "المبلغ المتبقي" },
+    { target: "فواتير", source: "فواتير" },
+    { target: "صورة المشروع", source: "صورة المشروع" },
+  ];
+  const properties = {};
+
+  for (const { target, source } of required) {
+    const prop = mainDb.properties?.[source];
+    if (!prop) continue;
+    const type = prop.type;
+    if (!type || !prop[type]) continue;
+    properties[target] = { [type]: prop[type] };
+  }
+
+  if (!properties["اسم المشروع"]) {
+    properties["اسم المشروع"] = { title: {} };
+  }
+
+  cachedProjectDbProps = properties;
+  return properties;
+}
+
+// إنشاء قاعدة مشاريع جديدة تحت صفحة المدير
+async function createSubDatabase(managerPageId, title = CHILD_DB_TITLE) {
+  const properties = await getProjectDbPropertiesForSubDb();
+
+  const db = await notion.databases.create({
+    parent: { page_id: managerPageId },
+    title: [
+      {
+        type: "text",
+        text: { content: title },
+      },
+    ],
+    properties,
+  });
+
+  console.log(`✅ تم إنشاء قاعدة "${title}" تحت صفحة المدير`);
+  return db.id;
+}
+
+// ======================
 // نسخ التيمبليت
 // ======================
 async function duplicateTemplate(managerName) {
@@ -74,15 +193,26 @@ async function duplicateTemplate(managerName) {
   const newPageId = page.id;
 
   // جلب محتوى التيمبليت
-  const templateContent = await notion.blocks.children.list({
-    block_id: TEMPLATE_PAGE_ID,
-  });
+  const templateBlocks = await fetchAllBlocks(TEMPLATE_PAGE_ID);
 
   // نسخ المحتوى
-  for (const block of templateContent.results) {
+  for (const block of templateBlocks) {
+    // child_database لا يمكن نسخه مباشرة عبر blocks.append → ننشئ قاعدة جديدة بنفس الاسم
+    if (block.type === "child_database") {
+      const title = block.child_database?.title || CHILD_DB_TITLE;
+      await createSubDatabase(newPageId, title);
+      continue;
+    }
+
+    const tree = await buildBlockTree(block);
+    if (!tree) {
+      console.log(`⚠️ تخطي بلوك غير مدعوم: ${block.type}`);
+      continue;
+    }
+
     await notion.blocks.children.append({
       block_id: newPageId,
-      children: [block],
+      children: [tree],
     });
   }
 
@@ -193,12 +323,19 @@ async function sync() {
         const managerMainPage = await findOrCreateManagerPage(managerName);
 
         // إيجاد داتا بيس مشاريعك داخل الصفحة
-        const childDbId = await findChildProjectsDb(managerMainPage);
+        let childDbId = await findChildProjectsDb(managerMainPage);
         if (!childDbId) {
           console.log(
-            `❌ ERROR: No child DB "${CHILD_DB_TITLE}" found in template page!`
+            `⚠️ No child DB "${CHILD_DB_TITLE}" found. سيتم إنشاء واحدة جديدة.`
           );
-          continue;
+          try {
+            childDbId = await createSubDatabase(managerMainPage, CHILD_DB_TITLE);
+          } catch (createErr) {
+            console.log(
+              `❌ ERROR: فشل إنشاء قاعدة "${CHILD_DB_TITLE}": ${createErr.message}`
+            );
+            continue;
+          }
         }
 
         await upsertProject(
