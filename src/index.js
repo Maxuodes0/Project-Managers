@@ -191,6 +191,7 @@ async function duplicateTemplate(managerName) {
   });
 
   const newPageId = page.id;
+  let createdChildDbId = null;
 
   // جلب محتوى التيمبليت
   const templateBlocks = await fetchAllBlocks(TEMPLATE_PAGE_ID);
@@ -200,7 +201,10 @@ async function duplicateTemplate(managerName) {
     // child_database لا يمكن نسخه مباشرة عبر blocks.append → ننشئ قاعدة جديدة بنفس الاسم
     if (block.type === "child_database") {
       const title = block.child_database?.title || CHILD_DB_TITLE;
-      await createSubDatabase(newPageId, title);
+      const dbId = await createSubDatabase(newPageId, title);
+      if (title === CHILD_DB_TITLE) {
+        createdChildDbId = dbId;
+      }
       continue;
     }
 
@@ -217,7 +221,7 @@ async function duplicateTemplate(managerName) {
   }
 
   console.log(`✅ Template copied → Page ID: ${newPageId}`);
-  return newPageId;
+  return { managerPageId: newPageId, childDbId: createdChildDbId };
 }
 
 // ======================
@@ -236,7 +240,9 @@ async function findOrCreateManagerPage(managerName) {
 
   if (search.results.length > 0) {
     console.log(`✔️ Found existing page`);
-    return search.results[0].id;
+    const pageId = search.results[0].id;
+    const existingChildDb = await findChildProjectsDb(pageId);
+    return { managerPageId: pageId, childDbId: existingChildDb };
   }
 
   console.log(`➕ Page not found → creating from template`);
@@ -320,16 +326,17 @@ async function sync() {
         const managerName = getPageTitle(managerPage);
 
         // إيجاد أو إنشاء صفحة المدير
-        const managerMainPage = await findOrCreateManagerPage(managerName);
+        const { managerPageId, childDbId: childDbFromTemplate } =
+          await findOrCreateManagerPage(managerName);
 
-        // إيجاد داتا بيس مشاريعك داخل الصفحة
-        let childDbId = await findChildProjectsDb(managerMainPage);
+        // إيجاد داتا بيس مشاريعك داخل الصفحة (أولوية للتي تم إنشاؤها أثناء نسخ التيمبليت)
+        let childDbId = childDbFromTemplate || (await findChildProjectsDb(managerPageId));
         if (!childDbId) {
           console.log(
             `⚠️ No child DB "${CHILD_DB_TITLE}" found. سيتم إنشاء واحدة جديدة.`
           );
           try {
-            childDbId = await createSubDatabase(managerMainPage, CHILD_DB_TITLE);
+            childDbId = await createSubDatabase(managerPageId, CHILD_DB_TITLE);
           } catch (createErr) {
             console.log(
               `❌ ERROR: فشل إنشاء قاعدة "${CHILD_DB_TITLE}": ${createErr.message}`
