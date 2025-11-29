@@ -3,20 +3,15 @@ import "dotenv/config";
 
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
 
-// ثابتة الأسماء
-const PROJECTS_DB = process.env.PROJECTS_DB;
-const MANAGERS_DB = process.env.MANAGERS_DB;
-const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID;
-
-const PROJECT_MANAGER_FIELD = "مدير المشروع"; // اسم الحقل EXACT
-const CHILD_DB_TITLE = "مشاريعك"; // اسم داتابيس المشاريع داخل التيمبليت
-
 // ======================
-// sleep بسيط
+// ثوابت
 // ======================
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const PROJECTS_DB = process.env.PROJECTS_DB;      // داتابيس المشاريع الأساسية
+const MANAGERS_DB = process.env.MANAGERS_DB;      // داتابيس مدراء المشاريع
+const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID; // صفحة التيمبليت
+
+const PROJECT_MANAGER_FIELD = "مدير المشروع"; // اسم العلاقة في داتابيس المشاريع
+const CHILD_DB_TITLE = "مشاريعك"; // اسم داتابيس المشاريع داخل صفحة المدير (غيره لو اسمك مختلف)
 
 // ======================
 // جلب عنوان أي صفحة
@@ -32,7 +27,7 @@ function getPageTitle(page) {
 }
 
 // ======================
-// إيجاد داتا بيس مشاريعك داخل الصفحة
+// إيجاد داتا بيس "مشاريعك" داخل صفحة المدير
 // ======================
 async function findChildProjectsDb(managerPageId) {
   let cursor = undefined;
@@ -59,8 +54,79 @@ async function findChildProjectsDb(managerPageId) {
 }
 
 // ======================
+// نسخ محتوى التيمبليت لصفحة معيّنة
+// - ينسخ كل البلوكات العادية
+// - لو لقى child_database → ينشئ داتابيس جديد بنفس السكيمة
+// ======================
+async function copyTemplateContentToPage(targetPageId) {
+  console.log(`📦 Copying template blocks into page: ${targetPageId}`);
+
+  let cursor = undefined;
+
+  do {
+    const res = await notion.blocks.children.list({
+      block_id: TEMPLATE_PAGE_ID,
+      page_size: 50,
+      start_cursor: cursor,
+    });
+
+    const normalBlocks = [];
+
+    for (const block of res.results) {
+      // لو البلوك داتابيس
+      if (block.type === "child_database") {
+        console.log(
+          `🗂 Found child_database in template → cloning as inline DB in target page`
+        );
+
+        const templateDbId = block.id;
+
+        // نجيب معلومات الداتابيس الأصلي
+        const dbInfo = await notion.databases.retrieve({
+          database_id: templateDbId,
+        });
+
+        // نجهز properties بدون id (عشان ما يعطي validation_error)
+        const newProperties = {};
+        for (const [name, prop] of Object.entries(dbInfo.properties)) {
+          const { id, ...rest } = prop;
+          newProperties[name] = rest;
+        }
+
+        // ننشئ داتابيس جديد داخل صفحة المدير
+        await notion.databases.create({
+          parent: { type: "page_id", page_id: targetPageId },
+          title: dbInfo.title, // نفس العنوان
+          is_inline: true, // يكون inline داخل الصفحة
+          properties: newProperties, // نفس الأعمدة
+        });
+
+        console.log(`✅ Cloned inline database in manager page`);
+      } else if (block.object === "block") {
+        // باقي البلوكات العادية ننسخها كما هي
+        const { type } = block;
+        normalBlocks.push({
+          object: "block",
+          type,
+          [type]: block[type],
+        });
+      }
+    }
+
+    if (normalBlocks.length) {
+      await notion.blocks.children.append({
+        block_id: targetPageId,
+        children: normalBlocks,
+      });
+    }
+
+    cursor = res.has_more ? res.next_cursor || undefined : undefined;
+  } while (cursor);
+}
+
+// ======================
 // التأكد من وجود داتابيس "مشاريعك" داخل صفحة المدير
-// إذا ما وُجدت → نطبّق التيمبليت على الصفحة ثم ننتظر لين يظهر
+// إذا ما وُجدت → ننسخ التيمبليت (مع استنساخ الداتابيس) ثم نبحث مرة ثانية
 // ======================
 async function ensureChildDbExists(managerPageId) {
   // أولاً نحاول نلقاه
@@ -68,44 +134,32 @@ async function ensureChildDbExists(managerPageId) {
   if (childDbId) return childDbId;
 
   console.log(
-    `🧩 No child DB "${CHILD_DB_TITLE}" in manager page → applying template...`
+    `🧩 No child DB "${CHILD_DB_TITLE}" in manager page → copying template content...`
   );
 
-  // نطبّق التيمبليت على صفحة موجودة
-  await notion.pages.update({
-    page_id: managerPageId,
-    template: {
-      type: "template_id",
-      template_id: TEMPLATE_PAGE_ID,
-    },
-    // erase_content: false  // نخلي المحتوى القديم (لو فيه شيء)
-  });
+  // ننسخ محتوى التيمبليت (مع استنساخ الداتابيس)
+  await copyTemplateContentToPage(managerPageId);
 
-  // التيمبليت يتطبق async، فننتظر شوي ونحاول نقرأ مرة ثانية
-  const maxTries = 5;
-  for (let i = 0; i < maxTries; i++) {
-    await sleep(1500); // 1.5 ثانية
-    childDbId = await findChildProjectsDb(managerPageId);
-    if (childDbId) {
-      console.log(
-        `✅ Child DB "${CHILD_DB_TITLE}" found after applying template`
-      );
-      return childDbId;
-    }
+  // نبحث مرة ثانية بعد النسخ
+  childDbId = await findChildProjectsDb(managerPageId);
+  if (!childDbId) {
+    console.log(
+      `❌ ERROR: Still no child DB "${CHILD_DB_TITLE}" after copying template content!`
+    );
+  } else {
+    console.log(`✅ Child DB "${CHILD_DB_TITLE}" found after copy`);
   }
 
-  console.log(
-    `❌ ERROR: Still no child DB "${CHILD_DB_TITLE}" after applying template!`
-  );
-  return null;
+  return childDbId;
 }
 
 // ======================
-// إنشاء صفحة مدير من التيمبليت مباشرة
+// إنشاء صفحة مدير جديدة + نسخ التيمبليت عليها
 // ======================
 async function duplicateTemplate(managerName) {
   console.log(`\n📄 Creating page for manager: ${managerName}`);
 
+  // إنشاء صفحة جديدة في MANAGERS_DB
   const page = await notion.pages.create({
     parent: { database_id: MANAGERS_DB },
     properties: {
@@ -118,15 +172,17 @@ async function duplicateTemplate(managerName) {
         ],
       },
     },
-    // هنا السحر: نستخدم التيمبليت
-    template: {
-      type: "template_id",
-      template_id: TEMPLATE_PAGE_ID,
-    },
   });
 
-  console.log(`✅ Page created from template → Page ID: ${page.id}`);
-  return page.id;
+  const newPageId = page.id;
+
+  // نسخ محتوى التيمبليت لهذه الصفحة (مع استنساخ الداتابيس)
+  await copyTemplateContentToPage(newPageId);
+
+  console.log(
+    `✅ Page created & template content copied → Page ID: ${newPageId}`
+  );
+  return newPageId;
 }
 
 // ======================
@@ -227,7 +283,7 @@ async function sync() {
       }
 
       for (const m of managers) {
-        // صفحة المدير المرتبطة
+        // صفحة المدير المرتبطة من علاقة "مدير المشروع"
         const managerPage = await notion.pages.retrieve({
           page_id: m.id,
         });
@@ -237,7 +293,7 @@ async function sync() {
         // إيجاد أو إنشاء صفحة المدير في MANAGERS_DB
         const managerMainPageId = await findOrCreateManagerPage(managerName);
 
-        // التأكد من وجود داتابيس "مشاريعك" داخل صفحة المدير (وتطبيق التيمبليت لو ناقص)
+        // التأكد من وجود داتابيس "مشاريعك" داخل صفحة المدير (ولو ناقصة ينسخ التيمبليت)
         const childDbId = await ensureChildDbExists(managerMainPageId);
         if (!childDbId) {
           console.log(
@@ -257,7 +313,9 @@ async function sync() {
   console.log("\n🎉 SYNC FINISHED");
 }
 
-// تشغيل
+// ======================
+// تشغيل السكربت
+// ======================
 sync().catch((err) => {
   console.error(err);
   process.exit(1);
