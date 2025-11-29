@@ -1,80 +1,173 @@
 import { Client } from "@notionhq/client";
 
 // --------------------------------------
-// 1- Notion Setup
+// 1- إعداد Notion + التحقق من المتغيرات
 // --------------------------------------
+const REQUIRED_ENV = ["NOTION_TOKEN", "PROJECTS_DB", "MANAGERS_DB", "TEMPLATE_PAGE_ID"];
+
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    throw new Error(`❌ متغير البيئة ${key} مفقود. أضفه قبل التشغيل.`);
+  }
+}
+
 const notion = new Client({
   auth: process.env.NOTION_TOKEN,
 });
 
-const PROJECTS_DB = process.env.PROJECTS_DB;           // قاعدة المشاريع
-const MANAGERS_DB = process.env.MANAGERS_DB;           // قاعدة مدراء المشاريع
+const PROJECTS_DB = process.env.PROJECTS_DB; // قاعدة المشاريع
+const MANAGERS_DB = process.env.MANAGERS_DB; // قاعدة مدراء المشاريع
 const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID; // صفحة التيمبليت الجاهزة
 
-// اسم قاعدة البيانات داخل صفحة المدير
+// اسم قاعدة البيانات داخل صفحة المدير (يمكن تغييرها من هنا)
 const SUB_DB_NAME = "مشاريعك";
 
-console.log("🚀 Starting SYNC...");
+// أسماء الخصائص لتجنّب التكرار + لتسهيل تعديلها لاحقاً
+const PROPERTY = {
+  projectName: "اسم المشروع",
+  projectStatus: "حالة المشروع",
+  projectRemaining: "المبلغ المتبقي",
+  projectInvoices: "فواتير",
+  projectImage: "صورة المشروع",
+  projectManager: "مدير المشروع",
+  managerTitle: "اسم مدير المشروع",
+};
 
 // --------------------------------------
-// 2- Get all projects from Projects DB (مع دعم pagination)
+// 2- Helpers
 // --------------------------------------
-async function getAllProjects() {
+async function fetchAllDatabaseItems(databaseId, filter) {
   const results = [];
-  let cursor = undefined;
+  let cursor;
 
   do {
     const response = await notion.databases.query({
-      database_id: PROJECTS_DB,
+      database_id: databaseId,
+      filter,
       start_cursor: cursor,
-      page_size: 100,
     });
 
     results.push(...response.results);
-    cursor = response.has_more ? response.next_cursor : undefined;
+    cursor = response.has_more ? response.next_cursor : null;
   } while (cursor);
 
   return results;
 }
 
-// --------------------------------------
-// 3- Find manager page by name
-// --------------------------------------
-async function findManagerPage(managerName) {
-  console.log(`🔍 Searching manager page: ${managerName}`);
+async function fetchAllBlocks(blockId) {
+  const results = [];
+  let cursor;
 
-  const response = await notion.databases.query({
-    database_id: MANAGERS_DB,
-    filter: {
-      property: "اسم مدير المشروع",
-      title: {
-        equals: managerName,
-      },
-    },
-  });
+  do {
+    const response = await notion.blocks.children.list({
+      block_id: blockId,
+      start_cursor: cursor,
+    });
+    results.push(...response.results);
+    cursor = response.has_more ? response.next_cursor : null;
+  } while (cursor);
 
-  if (response.results.length > 0) {
-    const page = response.results[0];
-    console.log(`✅ Found manager page: ${managerName}`);
-    return page.id;
+  return results;
+}
+
+// نفصل أخذ اسم المدير لأن relation يعطينا فقط الـ id
+const managerNameCache = new Map();
+async function resolveManagerName(managerRelation) {
+  if (!managerRelation || !managerRelation.relation.length) return null;
+
+  const managerPageId = managerRelation.relation[0].id;
+  if (managerNameCache.has(managerPageId)) {
+    return managerNameCache.get(managerPageId);
   }
 
-  console.log(`➕ Page not found → will create from template`);
+  const page = await notion.pages.retrieve({ page_id: managerPageId });
+  const titleProp = page.properties?.[PROPERTY.managerTitle]?.title || page.properties?.Name?.title;
+  const managerName = titleProp?.[0]?.plain_text || null;
+
+  managerNameCache.set(managerPageId, managerName);
+  return managerName;
+}
+
+// نبني بلوك جديد بدون المعرفات مع نسخ الأطفال
+function cloneBlockStructure(block) {
+  const { type } = block;
+  if (!type || !block[type]) return null;
+
+  const cloned = {
+    type,
+    [type]: { ...block[type] },
+  };
+
+  // إزالة قيم لا تُستخدم في الإنشاء
+  delete cloned[type].id;
+  delete cloned[type].created_time;
+  delete cloned[type].last_edited_time;
+  delete cloned[type].last_edited_by;
+  delete cloned[type].created_by;
+
+  return cloned;
+}
+
+async function buildBlockTree(block) {
+  const cloned = cloneBlockStructure(block);
+  if (!cloned) return null;
+
+  if (block.has_children) {
+    const children = await fetchAllBlocks(block.id);
+    const mapped = [];
+
+    for (const child of children) {
+      const built = await buildBlockTree(child);
+      if (built) mapped.push(built);
+    }
+
+    if (mapped.length) cloned.children = mapped;
+  }
+
+  return cloned;
+}
+
+console.log("🚀 Starting SYNC...");
+
+// --------------------------------------
+// 3- Get all projects from Projects DB
+// --------------------------------------
+async function getAllProjects() {
+  return fetchAllDatabaseItems(PROJECTS_DB);
+}
+
+// --------------------------------------
+// 4- Find manager page by name
+// --------------------------------------
+async function findManagerPage(managerName) {
+  console.log(`🔍 البحث عن صفحة المدير: ${managerName}`);
+
+  const response = await fetchAllDatabaseItems(MANAGERS_DB, {
+    property: PROPERTY.managerTitle,
+    title: { equals: managerName },
+  });
+
+  if (response.length > 0) {
+    console.log(`✅ وُجدت صفحة المدير: ${managerName}`);
+    return response[0].id;
+  }
+
+  console.log(`➕ لم تُوجد صفحة → سيتم الإنشاء من التيمبليت`);
   return null;
 }
 
 // --------------------------------------
-// 4- Create manager page FROM TEMPLATE
+// 5- Create manager page FROM TEMPLATE
 // --------------------------------------
 async function createManagerPageFromTemplate(managerName) {
-  console.log(`📄 Creating page for manager: ${managerName}`);
+  console.log(`📄 إنشاء صفحة للمدير: ${managerName}`);
 
   const newPage = await notion.pages.create({
     parent: {
       database_id: MANAGERS_DB,
     },
     properties: {
-      "اسم مدير المشروع": {
+      [PROPERTY.managerTitle]: {
         title: [
           {
             text: {
@@ -86,170 +179,160 @@ async function createManagerPageFromTemplate(managerName) {
     },
   });
 
-  // ننسخ محتوى التيمبليت داخل الصفحة الجديدة
   await copyTemplateContent(TEMPLATE_PAGE_ID, newPage.id);
 
-  console.log(`✅ Manager page created: ${managerName}`);
+  console.log(`✅ تم إنشاء صفحة المدير: ${managerName}`);
   return newPage.id;
 }
 
 // --------------------------------------
-// 5- Get ALL blocks from a page (with pagination)
-// --------------------------------------
-async function getAllBlocks(blockId) {
-  const blocks = [];
-  let cursor = undefined;
-
-  do {
-    const response = await notion.blocks.children.list({
-      block_id: blockId,
-      start_cursor: cursor,
-      page_size: 100,
-    });
-
-    blocks.push(...response.results);
-    cursor = response.has_more ? response.next_cursor : undefined;
-  } while (cursor);
-
-  return blocks;
-}
-
-// --------------------------------------
-// 6- Duplicate content inside template page
-//    مع تنظيف الحقول اللي ما يقبلها الـ API
+// 6- Duplicate content inside template page (مع الأطفال)
 // --------------------------------------
 async function copyTemplateContent(templateId, newPageId) {
-  const rawBlocks = await getAllBlocks(templateId);
+  const blocks = await fetchAllBlocks(templateId);
 
-  if (!rawBlocks.length) {
-    console.log("⚠️ Template has no blocks");
+  if (!blocks.length) {
+    console.log("⚠️ التيمبليت فارغ");
     return;
   }
 
-  console.log(`📦 Copying ${rawBlocks.length} blocks from template...`);
+  console.log(`📦 نسخ ${blocks.length} بلوك من التيمبليت...`);
 
-  // نحذف الحقول اللي Notion ما يسمح نرسلها ونخلي البلوك بأقرب شكل للأصلي
-  const cleanedBlocks = rawBlocks
-    .filter((block) => block.object === "block")
-    .map((block) => {
-      const {
-        id,
-        created_time,
-        last_edited_time,
-        created_by,
-        last_edited_by,
-        archived,
-        has_children,
-        object,
-        ...rest
-      } = block;
-      return rest;
-    });
+  for (const block of blocks) {
+    const tree = await buildBlockTree(block);
+    if (!tree) {
+      console.log(`⚠️ تخطي بلوك غير مدعوم: ${block.type}`);
+      continue;
+    }
 
-  // Notion يسمح حتى 100 بلوك في كل عملية append
-  const chunkSize = 100;
-  for (let i = 0; i < cleanedBlocks.length; i += chunkSize) {
-    const chunk = cleanedBlocks.slice(i, i + chunkSize);
     await notion.blocks.children.append({
       block_id: newPageId,
-      children: chunk,
+      children: [tree],
     });
   }
 
-  console.log("✅ Template content copied.");
+  console.log("✅ تم نسخ محتوى التيمبليت.");
 }
 
 // --------------------------------------
 // 7- Find "مشاريعك" database inside manager page
 // --------------------------------------
 async function findSubDatabase(managerPageId) {
-  console.log(`🔍 Scanning page for child DB: ${SUB_DB_NAME}`);
+  console.log(`🔍 البحث عن قاعدة ${SUB_DB_NAME} داخل صفحة المدير`);
 
-  const children = await getAllBlocks(managerPageId);
+  const children = await fetchAllBlocks(managerPageId);
 
   for (const block of children) {
-    if (block.type === "child_database") {
-      if (block.child_database.title === SUB_DB_NAME) {
-        console.log("✅ Found sub database:", SUB_DB_NAME);
-        return block.id;
-      }
+    if (block.type === "child_database" && block.child_database.title === SUB_DB_NAME) {
+      console.log(`✅ تم العثور على قاعدة ${SUB_DB_NAME}`);
+      return block.id;
     }
   }
 
-  console.log("❌ Sub database not found.");
+  console.log("❌ لم يتم العثور على القاعدة الفرعية.");
   return null;
 }
 
 // --------------------------------------
-// 8- Insert project into manager's "مشاريعك" DB
+// 8- منع التكرار في قاعدة المدير
 // --------------------------------------
-async function insertProject(subDbId, project) {
-  const projectNameProp = project.properties["اسم المشروع"];
-  const projectName =
-    projectNameProp?.title?.[0]?.plain_text || "بدون اسم";
+async function projectExists(subDbId, projectName) {
+  const matches = await fetchAllDatabaseItems(subDbId, {
+    property: PROPERTY.projectName,
+    title: { equals: projectName },
+  });
 
-  console.log(`➕ Adding project: ${projectName}`);
+  return matches.length > 0;
+}
+
+// --------------------------------------
+// 9- Insert project into manager's "مشاريعك" DB
+// --------------------------------------
+async function insertProject(subDbId, project, projectName) {
+  console.log(`➕ إضافة مشروع: ${projectName}`);
 
   await notion.pages.create({
     parent: { database_id: subDbId },
     properties: {
-      "اسم المشروع": project.properties["اسم المشروع"],
-      "حالة المشروع": project.properties["حالة المشروع"],
-      "المتبقي": project.properties["المبلغ المتبقي"],
-      "فواتير": project.properties["فواتير"] || { files: [] },
-      "صورة المشروع":
-        project.properties["صورة المشروع"] || { files: [] },
+      [PROPERTY.projectName]: project.properties[PROPERTY.projectName],
+      [PROPERTY.projectStatus]: project.properties[PROPERTY.projectStatus],
+      [PROPERTY.projectRemaining]: project.properties[PROPERTY.projectRemaining],
+      [PROPERTY.projectInvoices]: project.properties[PROPERTY.projectInvoices] || { files: [] },
+      [PROPERTY.projectImage]: project.properties[PROPERTY.projectImage] || { files: [] },
     },
   });
 
-  console.log("✅ Project added.");
+  console.log("✅ تم الإضافة.");
 }
 
 // --------------------------------------
-// 9- Main sync logic
+// 10- Main sync logic
 // --------------------------------------
 async function sync() {
+  const summary = {
+    processed: 0,
+    created: 0,
+    skippedNoManager: 0,
+    skippedNoSubDb: 0,
+    skippedDuplicate: 0,
+    errors: 0,
+  };
+
   const projects = await getAllProjects();
 
   for (const project of projects) {
-    const managerRelation = project.properties["مدير المشروع"];
+    summary.processed += 1;
+    const managerRelation = project.properties[PROPERTY.projectManager];
 
     if (!managerRelation || !managerRelation.relation.length) {
-      console.log("⚠️ Project has no manager, skipping.");
+      console.log("⚠️ المشروع بلا مدير → تخطي");
+      summary.skippedNoManager += 1;
       continue;
     }
 
-    // ملاحظة: relation عادة فيها id فقط
-    // لو تحتاج الاسم فعلياً، يفضل تخزنه كنص في نفس قاعدة المشاريع
-    const managerName =
-      managerRelation.relation[0].name || "مدير";
+    const managerName = (await resolveManagerName(managerRelation)) || "مدير";
+    const projectName = project.properties[PROPERTY.projectName]?.title?.[0]?.plain_text || "مشروع";
 
-    // 1) Find or Create Manager Page
-    let managerPageId = await findManagerPage(managerName);
+    try {
+      // 1) Find or Create Manager Page
+      let managerPageId = await findManagerPage(managerName);
 
-    if (!managerPageId) {
-      managerPageId = await createManagerPageFromTemplate(managerName);
+      if (!managerPageId) {
+        managerPageId = await createManagerPageFromTemplate(managerName);
+      }
+
+      // 2) Find "مشاريعك" DB
+      const subDbId = await findSubDatabase(managerPageId);
+      if (!subDbId) {
+        console.log(`❌ خطأ: قاعدة "${SUB_DB_NAME}" غير موجودة داخل صفحة المدير. أصلح التيمبليت.`);
+        summary.skippedNoSubDb += 1;
+        continue;
+      }
+
+      // 3) Prevent duplicates
+      const exists = await projectExists(subDbId, projectName);
+      if (exists) {
+        console.log(`ℹ️ المشروع "${projectName}" موجود مسبقاً → تخطي`);
+        summary.skippedDuplicate += 1;
+        continue;
+      }
+
+      // 4) Insert project
+      await insertProject(subDbId, project, projectName);
+      summary.created += 1;
+    } catch (err) {
+      summary.errors += 1;
+      console.error(`💥 خطأ أثناء مزامنة "${projectName}":`, err.message);
     }
-
-    // 2) Find "مشاريعك" DB
-    const subDbId = await findSubDatabase(managerPageId);
-    if (!subDbId) {
-      console.log(
-        `❌ ERROR: "مشاريعك" not found inside manager page. Please fix template.`
-      );
-      continue;
-    }
-
-    // 3) Insert project
-    await insertProject(subDbId, project);
   }
 
-  console.log("🎉 SYNC COMPLETED.");
+  console.log(
+    `🎉 انتهت المزامنة. تمت معالجة ${summary.processed} مشروع | أضيف ${summary.created} | ` +
+      `تخطي بلا مدير ${summary.skippedNoManager} | تخطي بلا قاعدة ${summary.skippedNoSubDb} | ` +
+      `موجود مسبقاً ${summary.skippedDuplicate} | أخطاء ${summary.errors}`
+  );
 }
 
-// --------------------------------------
-// 10- Run
-// --------------------------------------
 sync().catch((err) => {
   console.error("💥 Unhandled Error:", err);
 });
