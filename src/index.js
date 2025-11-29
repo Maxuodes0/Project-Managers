@@ -14,7 +14,7 @@ const CHILD_DB_TITLE = "مشاريعك"; // اسم داتابيس المشاري
 // ======================
 // جلب عنوان أي صفحة
 // ======================
-function getPageTitle(page: any) {
+function getPageTitle(page) {
   const props = page.properties;
   for (const key in props) {
     if (props[key]?.type === "title") {
@@ -27,10 +27,10 @@ function getPageTitle(page: any) {
 // ======================
 // نسخ محتوى التيمبليت لصفحة معيّنة
 // ======================
-async function copyTemplateContentToPage(targetPageId: string) {
+async function copyTemplateContentToPage(targetPageId) {
   console.log(`📦 Copying template blocks into page: ${targetPageId}`);
 
-  let cursor: string | undefined = undefined;
+  let cursor = undefined;
 
   do {
     const res = await notion.blocks.children.list({
@@ -41,10 +41,9 @@ async function copyTemplateContentToPage(targetPageId: string) {
 
     // نبني بلوكات جديدة من غير الـ id وغيره
     const children = res.results
-      .filter((block: any) => block.object === "block")
-      .map((block: any) => {
+      .filter((block) => block.object === "block")
+      .map((block) => {
         const { type } = block;
-        // نرجع بلوك بسيط: object + type + محتوى النوع فقط
         return {
           object: "block",
           type,
@@ -59,15 +58,15 @@ async function copyTemplateContentToPage(targetPageId: string) {
       });
     }
 
-    cursor = res.has_more ? res.next_cursor ?? undefined : undefined;
+    cursor = res.has_more ? res.next_cursor || undefined : undefined;
   } while (cursor);
 }
 
 // ======================
 // إيجاد داتا بيس مشاريعك داخل الصفحة
 // ======================
-async function findChildProjectsDb(managerPageId: string) {
-  let cursor: string | undefined = undefined;
+async function findChildProjectsDb(managerPageId) {
+  let cursor = undefined;
 
   do {
     const res = await notion.blocks.children.list({
@@ -84,7 +83,7 @@ async function findChildProjectsDb(managerPageId: string) {
       }
     }
 
-    cursor = res.has_more ? res.next_cursor ?? undefined : undefined;
+    cursor = res.has_more ? res.next_cursor || undefined : undefined;
   } while (cursor);
 
   return null;
@@ -94,7 +93,7 @@ async function findChildProjectsDb(managerPageId: string) {
 // التأكد من وجود داتابيس "مشاريعك" داخل صفحة المدير
 // إذا ما وُجدت → ينسخ التيمبليت داخل الصفحة ثم يبحث مرة ثانية
 // ======================
-async function ensureChildDbExists(managerPageId: string) {
+async function ensureChildDbExists(managerPageId) {
   // أولاً نحاول نلقاه
   let childDbId = await findChildProjectsDb(managerPageId);
   if (childDbId) return childDbId;
@@ -120,7 +119,7 @@ async function ensureChildDbExists(managerPageId: string) {
 // ======================
 // إنشاء صفحة مدير + نسخ التيمبليت عليها
 // ======================
-async function duplicateTemplate(managerName: string) {
+async function duplicateTemplate(managerName) {
   console.log(`\n📄 Creating page for manager: ${managerName}`);
 
   // إنشاء صفحة جديدة في MANAGERS_DB
@@ -150,7 +149,7 @@ async function duplicateTemplate(managerName: string) {
 // ======================
 // إيجاد أو إنشاء صفحة المدير
 // ======================
-async function findOrCreateManagerPage(managerName: string) {
+async function findOrCreateManagerPage(managerName) {
   console.log(`\n🔍 Searching manager page: ${managerName}`);
 
   const search = await notion.databases.query({
@@ -173,13 +172,8 @@ async function findOrCreateManagerPage(managerName: string) {
 // ======================
 // إضافة/تعديل مشروع داخل "مشاريعك"
 // ======================
-async function upsertProject(
-  childDbId: string,
-  projectName: string,
-  status: string | null,
-  remaining: number | null
-) {
-  const props: any = {
+async function upsertProject(childDbId, projectName, status, remaining) {
+  const props = {
     "اسم المشروع": {
       title: [{ text: { content: projectName } }],
     },
@@ -222,7 +216,7 @@ async function upsertProject(
 async function sync() {
   console.log("🚀 Starting SYNC...");
 
-  let cursor: string | undefined = undefined;
+  let cursor = undefined;
 
   do {
     const res = await notion.databases.query({
@@ -231,9 +225,9 @@ async function sync() {
       start_cursor: cursor,
     });
 
-    for (const project of res.results as any[]) {
+    for (const project of res.results) {
       const projectName =
-        project.properties["اسم المشروع"].title?.[0]?.plain_text ??
+        project.properties["اسم المشروع"].title?.[0]?.plain_text ||
         "بدون اسم";
 
       const status =
@@ -274,7 +268,7 @@ async function sync() {
       }
     }
 
-    cursor = res.has_more ? res.next_cursor ?? undefined : undefined;
+    cursor = res.has_more ? res.next_cursor || undefined : undefined;
   } while (cursor);
 
   console.log("\n🎉 SYNC FINISHED");
