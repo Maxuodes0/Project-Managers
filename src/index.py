@@ -167,7 +167,7 @@ class ProjectProcessor:
             return self.manager_cache[manager_name]
 
         try:
-            results = self.notion.databases.query(
+            results = self.notion.databases.query_database(
                 database_id=self.managers_db_id,
                 filter={
                     "property": "اسم مدير المشروع",
@@ -227,7 +227,7 @@ class ProjectProcessor:
         project_name = project_data['name']
         
         try:
-            results = self.notion.databases.query(
+            results = self.notion.databases.query_database(
                 database_id=manager_db_id,
                 filter={
                     "property": "اسم المشروع",
@@ -322,7 +322,7 @@ class ProjectProcessor:
         print("🚀 بدء تشغيل سكريبت مزامنة مشاريع Notion...")
         
         try:
-            results = self.notion.databases.query(
+            results = self.notion.databases.query_database(
                 database_id=self.projects_db_id
             ).get('results')
             
@@ -347,7 +347,7 @@ class ProjectProcessor:
             print("🚨 السكربت توقف مبكراً.")
 
 # ----------------------------------------------------
-# 🔥🔥🔥 التعديل الوحيد اللي يخليك ترتاح — هنا فقط 🔥🔥🔥
+# MAIN
 # ----------------------------------------------------
 
 if __name__ == "__main__":
@@ -355,8 +355,8 @@ if __name__ == "__main__":
     
     processor = ProjectProcessor(
         notion_token=NOTION_TOKEN,
-        projects_db_id=PROJECTS_DB,     # ← هنا كان الخطأ — الآن صحيح
-        managers_db_id=MANAGERS_DB,     # ← الآن يقرأ Secret الصحيح
+        projects_db_id=PROJECTS_DB,
+        managers_db_id=MANAGERS_DB,
         template_page_id=TEMPLATE_PAGE_ID,
     )
 
