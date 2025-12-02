@@ -18,21 +18,16 @@ jobs:
         with:
           python-version: '3.x'
 
-      # تثبيت التبعيات باستخدام pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install notion-client python-dotenv 
+          pip install notion-client python-dotenv
 
-      # تمرير المتغيرات باستخدام أسماء Secrets الجديدة
       - name: Run Notion schema logger
         env:
-          # استخدام أسماء الأسرار كما هي بالضبط
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
-          MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
-          SUB_DB_NAME: ${{ secrets.SUB_DB_NAME }}
+          PROJECTS_DB_ID: ${{ secrets.PROJECTS_DB_ID }}
+          MANAGERS_DB_ID: ${{ secrets.MANAGERS_DB_ID }}
           TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
 
-        # تشغيل ملف Python
         run: python src/index.py
