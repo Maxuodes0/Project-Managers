@@ -61,9 +61,11 @@ function cleanProperties(props) {
 }
 
 // ---------------------------------------------------------
-// FETCH HR IMAGE
+//  FETCH IMAGE FROM HR DB
 // ---------------------------------------------------------
 async function getManagerImage(managerName) {
+  console.log(`🔍 Searching HR for image of: ${managerName}`);
+
   const result = await notion.databases.query({
     database_id: HR_DB,
     filter: {
@@ -72,14 +74,22 @@ async function getManagerImage(managerName) {
     }
   });
 
-  if (!result.results.length) return null;
+  if (!result.results.length) {
+    console.log("⚠️ No HR record found for", managerName);
+    return null;
+  }
 
   const page = result.results[0];
   const files = page.properties["الصوره الشخصية للموظف"]?.files;
 
-  if (!files || !files.length) return null;
+  if (!files || !files.length) {
+    console.log("⚠️ HR record exists but no image for", managerName);
+    return null;
+  }
 
   const file = files[0];
+
+  console.log("📸 HR Image Type:", file.type);
 
   if (file.type === "file") return file.file.url;
   if (file.type === "external") return file.external.url;
@@ -91,6 +101,7 @@ async function getManagerImage(managerName) {
 // FETCH ALL PROJECTS
 // ---------------------------------------------------------
 async function fetchAllProjects(db) {
+  console.log("🚀 Fetching all projects…");
   const res = [];
   let cursor;
 
@@ -107,6 +118,7 @@ async function fetchAllProjects(db) {
     cursor = r.next_cursor;
   }
 
+  console.log(`📁 Total projects: ${res.length}`);
   return res;
 }
 
@@ -114,7 +126,7 @@ async function fetchAllProjects(db) {
 // CREATE INLINE PROJECT DB
 // ---------------------------------------------------------
 async function createInlineProjectsDB(managerPageId) {
-  console.log("📦 Creating INLINE Projects DB…");
+  console.log("📦 Creating INLINE Projects DB…", managerPageId);
 
   const blocks = await notion.blocks.children.list({
     block_id: TEMPLATE_PAGE_ID,
@@ -149,6 +161,8 @@ async function createInlineProjectsDB(managerPageId) {
 // ENSURE INLINE DB EXISTS
 // ---------------------------------------------------------
 async function ensureProjectsDB(managerPageId) {
+  console.log("🔍 Checking inline DB for manager:", managerPageId);
+
   let cursor;
   while (true) {
     const r = await notion.blocks.children.list({
@@ -159,6 +173,7 @@ async function ensureProjectsDB(managerPageId) {
 
     for (const b of r.results) {
       if (b.type === "child_database" && b.child_database?.title === "مشاريعك") {
+        console.log("✅ Found existing inline Projects DB:", b.id);
         return b.id;
       }
     }
@@ -179,7 +194,11 @@ async function getOrCreateManager(relId, stats) {
   const original = await notion.pages.retrieve({ page_id: relId });
   const managerName = getPageTitle(original);
 
-  if (!managerName) throw new Error("No manager name");
+  console.log(`\n============================`);
+  console.log(`👤 Processing manager: ${managerName}`);
+  console.log(`============================`);
+
+  if (!managerName) throw new Error("❌ No manager name");
 
   if (managersCache.has(managerName)) return managersCache.get(managerName);
 
@@ -195,27 +214,31 @@ async function getOrCreateManager(relId, stats) {
 
   if (found.results.length) {
     managerPageId = found.results[0].id;
+    console.log("📄 Existing manager page:", managerPageId);
   } else {
     const created = await notion.pages.create({
       parent: { database_id: MANAGERS_DB },
       properties: {
         "اسم مدير المشروع": {
           title: [{ text: { content: managerName } }],
-        },
-      },
+        }
+      }
     });
 
     managerPageId = created.id;
     stats.newManagerPages++;
+    console.log("🆕 Created manager page:", managerPageId);
   }
 
   // INLINE DB
   const projectsDbId = await ensureProjectsDB(managerPageId);
 
-  // FETCH MANAGER IMAGE
+  // IMAGE
   const imageUrl = await getManagerImage(managerName);
+  console.log("🔗 Image URL:", imageUrl);
 
-  // SET IMAGE PROPERTY IN MANAGER PAGE
+  console.log("🖼 Updating MANAGER IMAGE PROPERTY…");
+
   await notion.pages.update({
     page_id: managerPageId,
     properties: {
@@ -224,13 +247,16 @@ async function getOrCreateManager(relId, stats) {
           ? [
               {
                 name: managerName + ".jpg",
-                external: { url: imageUrl }
+                type: "file",
+                file: { url: imageUrl, expiry_time: null }
               }
             ]
           : []
       }
     }
   });
+
+  console.log("✅ Image updated in manager page.");
 
   const obj = { managerPageId, managerName, projectsDbId };
   managersCache.set(managerName, obj);
@@ -242,6 +268,8 @@ async function getOrCreateManager(relId, stats) {
 // UPSERT PROJECT
 // ---------------------------------------------------------
 async function upsertProject({ managerProjectsDbId, projectName, projectStatus, remaining, stats }) {
+  console.log(`🔄 UPSERT project "${projectName}" into DB ${managerProjectsDbId}`);
+
   const existing = await notion.databases.query({
     database_id: managerProjectsDbId,
     filter: { property: "اسم المشروع", title: { equals: projectName } },
@@ -264,12 +292,14 @@ async function upsertProject({ managerProjectsDbId, projectName, projectStatus, 
   }
 
   if (existing.results.length) {
+    console.log("✏️ Updating existing project...");
     await notion.pages.update({
       page_id: existing.results[0].id,
       properties: props,
     });
     stats.projectsUpdated++;
   } else {
+    console.log("➕ Inserting new project...");
     await notion.pages.create({
       parent: { database_id: managerProjectsDbId },
       properties: props,
@@ -291,6 +321,9 @@ async function processProject(page, stats) {
   const remaining = getFormulaNumber(page, "المبلغ المتبقي");
   const managers = getRelations(page, "مدير المشروع");
 
+  console.log(`\n📂 Project: ${name}`);
+  console.log("Managers:", managers);
+
   if (!managers.length) return;
 
   for (const m of managers) {
@@ -305,7 +338,7 @@ async function processProject(page, stats) {
         stats,
       });
     } catch (err) {
-      console.error("Manager error:", err.message);
+      console.error("❌ Manager error:", err.message);
     }
   }
 }
@@ -327,11 +360,11 @@ async function main() {
     try {
       await processProject(p, stats);
     } catch (err) {
-      console.error("Project error:", err.message);
+      console.error("❌ Project error:", err.message);
     }
   }
 
-  console.log("=== STATS ===");
+  console.log("\n=== STATS ===");
   console.log(stats);
 }
 
