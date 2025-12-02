@@ -8,16 +8,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
-PROJECTS_DB_ID = os.environ.get("PROJECTS_DB_ID")
-MANAGERS_DB_ID = os.environ.get("MANAGERS_DB_ID")
+PROJECTS_DB = os.environ.get("PROJECTS_DB")
+MANAGERS_DB = os.environ.get("MANAGERS_DB")
 TEMPLATE_PAGE_ID = os.environ.get("TEMPLATE_PAGE_ID")
 
 def validate_env():
     """يتحقق من وجود جميع المتغيرات البيئية المطلوبة."""
     required = {
         "NOTION_TOKEN": NOTION_TOKEN,
-        "PROJECTS_DB_ID": PROJECTS_DB_ID,
-        "MANAGERS_DB_ID": MANAGERS_DB_ID,
+        "PROJECTS_DB": PROJECTS_DB,
+        "MANAGERS_DB": MANAGERS_DB,
         "TEMPLATE_PAGE_ID": TEMPLATE_PAGE_ID,
     }
     missing = [key for key, value in required.items() if not value]
