@@ -5,7 +5,7 @@ import { Client } from "@notionhq/client";
 dotenv.config();
 
 // ---------------------------------------------------------
-// ENV VALIDATION
+// ENV
 // ---------------------------------------------------------
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const PROJECTS_DB = process.env.PROJECTS_DB;
@@ -13,12 +13,7 @@ const MANAGERS_DB = process.env.MANAGERS_DB;
 const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID;
 
 function validateEnv() {
-  const req = {
-    NOTION_TOKEN,
-    PROJECTS_DB,
-    MANAGERS_DB,
-    TEMPLATE_PAGE_ID,
-  };
+  const req = { NOTION_TOKEN, PROJECTS_DB, MANAGERS_DB, TEMPLATE_PAGE_ID };
   const missing = Object.entries(req)
     .filter(([, v]) => !v)
     .map(([k]) => k);
@@ -35,46 +30,28 @@ const notion = new Client({ auth: NOTION_TOKEN });
 // ---------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------
+function getTitle(page, prop) {
+  return page.properties[prop]?.title?.map((t) => t.plain_text).join("") || null;
+}
+
+function getSelectName(page, prop) {
+  return page.properties[prop]?.select?.name || null;
+}
+
+function getFormulaNumber(page, prop) {
+  return page.properties[prop]?.formula?.number ?? null;
+}
+
+function getRelationIds(page, prop) {
+  return page.properties[prop]?.relation?.map((x) => x.id) || [];
+}
+
 function getPageTitle(page) {
   const key = Object.keys(page.properties).find(
     (k) => page.properties[k].type === "title"
   );
-  if (!key) return null;
-  const t = page.properties[key].title;
+  const t = page.properties[key]?.title;
   return t?.map((x) => x.plain_text).join("") || null;
-}
-
-function getTitle(page, prop) {
-  const p = page.properties[prop];
-  return p?.title?.map((x) => x.plain_text).join("") || null;
-}
-
-function getSelectName(page, prop) {
-  const x = page.properties[prop];
-  return x?.select?.name || null;
-}
-
-function getFormulaNumber(page, prop) {
-  const f = page.properties[prop];
-  return f?.formula?.number ?? null;
-}
-
-function getRelationIds(page, prop) {
-  const r = page.properties[prop];
-  return r?.relation?.map((x) => x.id) || [];
-}
-
-// ---------------------------------------------------------
-// CLEAN DB SCHEMA  (important patch)
-// ---------------------------------------------------------
-function cleanDatabaseProperties(props) {
-  const clean = {};
-  for (const [k, val] of Object.entries(props)) {
-    const t = val.type;
-    if (t === "formula" || t === "rollup") continue; // ❌ Not allowed
-    clean[k] = val;
-  }
-  return clean;
 }
 
 // ---------------------------------------------------------
@@ -100,104 +77,73 @@ async function fetchAllProjectsFromDatabase(db) {
 }
 
 // ---------------------------------------------------------
-// COPY TEMPLATE — FIXED VERSION
+// CLONE CHILD DATABASE FROM TEMPLATE ONLY
 // ---------------------------------------------------------
-async function copyTemplateToManagerPage(managerPageId) {
-  console.log(`📦 Copying template → ${managerPageId}`);
+async function createProjectsDbFromTemplate(managerPageId) {
+  console.log("📦 Creating Projects DB…");
 
+  // 1) جيب بلوكات التيمبليت
+  const blocks = await notion.blocks.children.list({
+    block_id: TEMPLATE_PAGE_ID,
+    page_size: 100,
+  });
+
+  // 2) لاقي داتابيس "مشاريعك"
+  const dbBlock = blocks.results.find(
+    (b) => b.type === "child_database" && b.child_database?.title === "مشاريعك"
+  );
+
+  if (!dbBlock) throw new Error("❌ Template has no 'مشاريعك' database.");
+
+  // 3) جيب السكيمة الأصلية
+  const templateDb = await notion.databases.retrieve({
+    database_id: dbBlock.id,
+  });
+
+  // 4) أنشئ نسخة جديدة داخل صفحة المدير
+  const newDb = await notion.databases.create({
+    parent: { page_id: managerPageId },
+    title: [
+      {
+        type: "text",
+        text: { content: "مشاريعك" },
+      },
+    ],
+    properties: templateDb.properties,
+  });
+
+  console.log("✅ Projects DB Created:", newDb.id);
+  return newDb.id;
+}
+
+// ---------------------------------------------------------
+// ENSURE DB EXISTS
+// ---------------------------------------------------------
+async function ensureProjectsDatabase(managerPageId) {
   let cursor;
 
   while (true) {
     const res = await notion.blocks.children.list({
-      block_id: TEMPLATE_PAGE_ID,
-      page_size: 100,
-      start_cursor: cursor,
-    });
-
-    let batch = [];
-
-    const flush = async () => {
-      if (batch.length === 0) return;
-      await notion.blocks.children.append({
-        block_id: managerPageId,
-        children: batch,
-      });
-      batch = [];
-    };
-
-    for (const block of res.results) {
-      if (block.type === "child_database") {
-        await flush();
-
-        const templateDb = await notion.databases.retrieve({
-          database_id: block.id,
-        });
-
-        await notion.databases.create({
-          parent: { page_id: managerPageId },
-          title: templateDb.title,
-          properties: cleanDatabaseProperties(templateDb.properties),
-        });
-      } else {
-        const { type, has_children } = block;
-        batch.push({
-          type,
-          has_children,
-          [type]: block[type],
-        });
-      }
-    }
-
-    await flush();
-
-    if (!res.has_more) break;
-    cursor = res.next_cursor;
-  }
-
-  console.log(`✅ Template copied to ${managerPageId}`);
-}
-
-// ---------------------------------------------------------
-// FIND CHILD DB "مشاريعك"
-// ---------------------------------------------------------
-async function findProjectsChildDatabase(managerPageId) {
-  let cursor;
-
-  while (true) {
-    const r = await notion.blocks.children.list({
       block_id: managerPageId,
       page_size: 100,
       start_cursor: cursor,
     });
 
-    for (const b of r.results) {
+    for (const block of res.results) {
       if (
-        b.type === "child_database" &&
-        b.child_database?.title === "مشاريعك"
+        block.type === "child_database" &&
+        block.child_database?.title === "مشاريعك"
       ) {
-        return b.id;
+        return block.id;
       }
     }
 
-    if (!r.has_more) break;
-    cursor = r.next_cursor;
+    if (!res.has_more) break;
+    cursor = res.next_cursor;
   }
 
-  return null;
-}
-
-async function ensureProjectsDatabase(managerPageId) {
-  let dbId = await findProjectsChildDatabase(managerPageId);
-  if (dbId) return dbId;
-
-  await copyTemplateToManagerPage(managerPageId);
-
-  dbId = await findProjectsChildDatabase(managerPageId);
-  if (!dbId) {
-    console.error("❌ مشاريعك DB STILL MISSING:", managerPageId);
-    return null;
-  }
-  return dbId;
+  // إذا مو موجود → انسخه من التيمبليت
+  return await createProjectsDbFromTemplate(managerPageId);
 }
 
 // ---------------------------------------------------------
@@ -209,11 +155,11 @@ async function getOrCreateManagerTarget(relId, stats) {
   const original = await notion.pages.retrieve({ page_id: relId });
   const managerName = getPageTitle(original);
 
-  if (!managerName) throw new Error("لا يوجد اسم مدير");
+  if (!managerName) throw new Error("No manager name");
 
   if (managersCache.has(managerName)) return managersCache.get(managerName);
 
-  // search in MANAGERS_DB
+  // Search for manager page
   const found = await notion.databases.query({
     database_id: MANAGERS_DB,
     filter: {
@@ -227,6 +173,7 @@ async function getOrCreateManagerTarget(relId, stats) {
   if (found.results.length) {
     managerPageId = found.results[0].id;
   } else {
+    // إنشاء صفحة مدير جديدة
     const created = await notion.pages.create({
       parent: { database_id: MANAGERS_DB },
       properties: {
@@ -238,16 +185,14 @@ async function getOrCreateManagerTarget(relId, stats) {
 
     managerPageId = created.id;
     stats.newManagerPages++;
-    await copyTemplateToManagerPage(managerPageId);
   }
 
+  // تأكد من وجود "مشاريعك"
   const projectsDbId = await ensureProjectsDatabase(managerPageId);
-  if (!projectsDbId)
-    throw new Error(`Missing مشاريعك DB for ${managerName}`);
 
-  const payload = { managerPageId, projectsDbId, managerName };
-  managersCache.set(managerName, payload);
-  return payload;
+  const cacheObj = { managerPageId, projectsDbId, managerName };
+  managersCache.set(managerName, cacheObj);
+  return cacheObj;
 }
 
 // ---------------------------------------------------------
@@ -260,7 +205,8 @@ async function upsertProjectForManager({
   remainingAmount,
   stats,
 }) {
-  const exists = await notion.databases.query({
+  // Search existing
+  const existing = await notion.databases.query({
     database_id: managerProjectsDbId,
     filter: {
       property: "اسم المشروع",
@@ -269,20 +215,25 @@ async function upsertProjectForManager({
   });
 
   const props = {
-    "اسم المشروع": {
-      title: [{ text: { content: projectName } }],
-    },
+    "اسم المشروع": { title: [{ text: { content: projectName } }] },
   };
 
-  if (projectStatus)
+  // خصائص إضافية إذا موجودة بالداتابيس
+  const schema = await notion.databases.retrieve({
+    database_id: managerProjectsDbId,
+  });
+
+  if (schema.properties["حالة المشروع"] && projectStatus) {
     props["حالة المشروع"] = { select: { name: projectStatus } };
+  }
 
-  if (remainingAmount !== null)
+  if (schema.properties["المبلغ المتبقي"] && remainingAmount !== null) {
     props["المبلغ المتبقي"] = { number: remainingAmount };
+  }
 
-  if (exists.results.length) {
+  if (existing.results.length) {
     await notion.pages.update({
-      page_id: exists.results[0].id,
+      page_id: existing.results[0].id,
       properties: props,
     });
     stats.projectsUpdated++;
@@ -320,7 +271,7 @@ async function processProjectPage(project, stats) {
         stats,
       });
     } catch (e) {
-      console.error("Error manager:", e.message);
+      console.error("Manager Error:", e.message);
       continue;
     }
   }
@@ -343,7 +294,7 @@ async function main() {
     try {
       await processProjectPage(project, stats);
     } catch (e) {
-      console.error("Project error:", e.message);
+      console.error("Project Error:", e.message);
     }
   }
 
