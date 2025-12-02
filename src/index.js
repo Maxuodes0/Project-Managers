@@ -47,9 +47,6 @@ function getPageTitle(pg) {
   return pg.properties[key]?.title?.map(t => t.plain_text).join("") || null;
 }
 
-// ---------------------------------------------------------
-// CLEAN PROPERTIES (remove formula + rollup)
-// ---------------------------------------------------------
 function cleanProperties(props) {
   const clean = {};
   for (const [key, val] of Object.entries(props)) {
@@ -61,7 +58,7 @@ function cleanProperties(props) {
 }
 
 // ---------------------------------------------------------
-//  FETCH IMAGE FROM HR DB
+// FETCH IMAGE FROM HR DB
 // ---------------------------------------------------------
 async function getManagerImage(managerName) {
   console.log(`🔍 Searching HR for image of: ${managerName}`);
@@ -153,7 +150,6 @@ async function createInlineProjectsDB(managerPageId) {
   });
 
   console.log("✅ INLINE DB CREATED:", newDb.id);
-
   return newDb.id;
 }
 
@@ -248,7 +244,7 @@ async function getOrCreateManager(relId, stats) {
               {
                 name: managerName + ".jpg",
                 type: "file",
-                file: { url: imageUrl, expiry_time: null }
+                file: { url: imageUrl }   // 👈 FIXED HERE
               }
             ]
           : []
@@ -347,12 +343,7 @@ async function processProject(page, stats) {
 // MAIN
 // ---------------------------------------------------------
 async function main() {
-  const stats = {
-    total: 0,
-    projectsInserted: 0,
-    projectsUpdated: 0,
-    newManagerPages: 0,
-  };
+  const stats = { total: 0, projectsInserted: 0, projectsUpdated: 0, newManagerPages: 0 };
 
   const projects = await fetchAllProjects(PROJECTS_DB);
 
