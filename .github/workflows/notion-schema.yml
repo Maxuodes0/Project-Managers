@@ -1,4 +1,4 @@
-name: Notion Schema Inspector (Python)
+name: Notion Sync
 
 on:
   workflow_dispatch:
@@ -6,28 +6,26 @@ on:
     - cron: "*/5 * * * *"
 
 jobs:
-  run-schema-inspector:
+  run-sync:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Use Python 3.x
-        uses: actions/setup-python@v5
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.x'
+          node-version: '20'
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install notion-client python-dotenv
+          npm install
 
-      - name: Run Notion schema logger
+      - name: Run Notion Sync Script
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          PROJECTS_DB: ${{ secrets.PROJECTS_DB }}        # ✔ مطابق للسكربت
-          MANAGERS_DB: ${{ secrets.MANAGERS_DB }}        # ✔ مطابق للسكربت
+          PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
+          MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
           TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
-
-        run: python src/index.py
+        run: node src/index.js
