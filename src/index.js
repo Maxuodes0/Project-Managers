@@ -1,4 +1,3 @@
-
 // src/index.js
 import dotenv from "dotenv";
 import { Client } from "@notionhq/client";
@@ -12,12 +11,11 @@ const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const PROJECTS_DB = process.env.PROJECTS_DB;
 const MANAGERS_DB = process.env.MANAGERS_DB;
 const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID;
+const HR_DB = process.env.HR_DB; // 👈 قاعدة بيانات الموارد البشرية الجديدة
 
 function validateEnv() {
-  const req = { NOTION_TOKEN, PROJECTS_DB, MANAGERS_DB, TEMPLATE_PAGE_ID };
-  const missing = Object.entries(req)
-    .filter(([, v]) => !v)
-    .map(([k]) => k);
+  const req = { NOTION_TOKEN, PROJECTS_DB, MANAGERS_DB, TEMPLATE_PAGE_ID, HR_DB };
+  const missing = Object.entries(req).filter(([, v]) => !v).map(([k]) => k);
   if (missing.length) {
     console.error("❌ Missing ENV:", missing.join(", "));
     process.exit(1);
@@ -63,6 +61,60 @@ function cleanProperties(props) {
 }
 
 // ---------------------------------------------------------
+// FETCH HR IMAGE
+// ---------------------------------------------------------
+async function getManagerImage(managerName) {
+  const result = await notion.databases.query({
+    database_id: HR_DB,
+    filter: {
+      property: "اسم الموظف",
+      title: { equals: managerName }
+    }
+  });
+
+  if (!result.results.length) return null;
+
+  const page = result.results[0];
+  const files = page.properties["الصوره الشخصية للموظف"]?.files;
+
+  if (!files || !files.length) return null;
+
+  return files[0]?.file?.url || null;
+}
+
+// ---------------------------------------------------------
+// ADD IMAGE BLOCK TO PAGE
+// ---------------------------------------------------------
+async function insertManagerImage(managerPageId, imageUrl) {
+  if (!imageUrl) return;
+
+  // check if already exists
+  const children = await notion.blocks.children.list({
+    block_id: managerPageId,
+    page_size: 20,
+  });
+
+  const exists = children.results.some(
+    b => b.type === "image" && b.image?.external?.url === imageUrl
+  );
+  if (exists) return;
+
+  await notion.blocks.children.append({
+    block_id: managerPageId,
+    children: [
+      {
+        object: "block",
+        type: "image",
+        image: {
+          type: "external",
+          external: { url: imageUrl }
+        }
+      }
+    ]
+  });
+}
+
+// ---------------------------------------------------------
 // FETCH ALL PROJECTS
 // ---------------------------------------------------------
 async function fetchAllProjects(db) {
@@ -91,7 +143,6 @@ async function fetchAllProjects(db) {
 async function createInlineProjectsDB(managerPageId) {
   console.log("📦 Creating INLINE Projects DB…");
 
-  // get template children
   const blocks = await notion.blocks.children.list({
     block_id: TEMPLATE_PAGE_ID,
     page_size: 100,
@@ -111,17 +162,9 @@ async function createInlineProjectsDB(managerPageId) {
 
   const newDb = await notion.databases.create({
     parent: { type: "page_id", page_id: managerPageId },
-    title: [
-      {
-        type: "text",
-        text: { content: "مشاريعك" },
-      },
-    ],
+    title: [{ type: "text", text: { content: "مشاريعك" } }],
     properties: cleanProps,
-    // **********************************************
-    // 👈 التعديل هنا: لجعل قاعدة البيانات مضمنة (Inline)
     is_inline: true,
-    // **********************************************
   });
 
   console.log("✅ INLINE DB CREATED:", newDb.id);
@@ -134,7 +177,6 @@ async function createInlineProjectsDB(managerPageId) {
 // ---------------------------------------------------------
 async function ensureProjectsDB(managerPageId) {
   let cursor;
-
   while (true) {
     const r = await notion.blocks.children.list({
       block_id: managerPageId,
@@ -194,7 +236,12 @@ async function getOrCreateManager(relId, stats) {
     stats.newManagerPages++;
   }
 
+  // CREATE INLINE DB
   const projectsDbId = await ensureProjectsDB(managerPageId);
+
+  // INSERT PROFILE IMAGE
+  const imageUrl = await getManagerImage(managerName);
+  await insertManagerImage(managerPageId, imageUrl);
 
   const obj = { managerPageId, managerName, projectsDbId };
   managersCache.set(managerName, obj);
@@ -205,25 +252,14 @@ async function getOrCreateManager(relId, stats) {
 // ---------------------------------------------------------
 // UPSERT PROJECT
 // ---------------------------------------------------------
-async function upsertProject({
-  managerProjectsDbId,
-  projectName,
-  projectStatus,
-  remaining,
-  stats,
-}) {
+async function upsertProject({ managerProjectsDbId, projectName, projectStatus, remaining, stats }) {
   const existing = await notion.databases.query({
     database_id: managerProjectsDbId,
-    filter: {
-      property: "اسم المشروع",
-      title: { equals: projectName },
-    },
+    filter: { property: "اسم المشروع", title: { equals: projectName } },
   });
 
   const props = {
-    "اسم المشروع": {
-      title: [{ text: { content: projectName } }],
-    },
+    "اسم المشروع": { title: [{ text: { content: projectName } }] },
   };
 
   const schema = await notion.databases.retrieve({
