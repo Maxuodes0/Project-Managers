@@ -46,7 +46,6 @@ function getPageTitle(pg) {
   );
   return pg.properties[key]?.title?.map(t => t.plain_text).join("") || null;
 }
-
 function cleanProperties(props) {
   const clean = {};
   for (const [key, val] of Object.entries(props)) {
@@ -58,17 +57,18 @@ function cleanProperties(props) {
 }
 
 // ---------------------------------------------------------
-// FETCH IMAGE FROM HR DB
+// FETCH IMAGE OBJECT FROM HR DB (دالة جديدة/معدلة)
 // ---------------------------------------------------------
-async function getManagerImage(managerName) {
+async function getManagerFileObject(managerName) {
   console.log(`🔍 Searching HR for image of: ${managerName}`);
 
   const result = await notion.databases.query({
     database_id: HR_DB,
     filter: {
-      property: "اسم الموظف",
+      property: "اسم الموظف", // يجب أن يتطابق مع خاصية الاسم في HR_DB
       title: { equals: managerName }
-    }
+    },
+    page_size: 1
   });
 
   if (!result.results.length) {
@@ -77,7 +77,7 @@ async function getManagerImage(managerName) {
   }
 
   const page = result.results[0];
-  const files = page.properties["الصوره الشخصية للموظف"]?.files;
+  const files = page.properties["الصورة الشخصية للموظف"]?.files; // يجب أن يتطابق مع خاصية الصورة في HR_DB
 
   if (!files || !files.length) {
     console.log("⚠️ HR record exists but no image for", managerName);
@@ -85,14 +85,30 @@ async function getManagerImage(managerName) {
   }
 
   const file = files[0];
-
   console.log("📸 HR Image Type:", file.type);
 
-  if (file.type === "file") return file.file.url;
-  if (file.type === "external") return file.external.url;
+  // نعيد كائن الملف كاملاً كما هو لاستخدامه في تحديث الصفحة
+  if (file.type === "file") {
+    return {
+      name: file.name,
+      type: "file",
+      file: {
+        url: file.file.url,
+        expiry_time: file.file.expiry_time // يجب تمرير تاريخ الانتهاء
+      }
+    };
+  }
+  if (file.type === "external") {
+    return {
+      name: file.name,
+      type: "external",
+      external: { url: file.external.url }
+    };
+  }
 
   return null;
 }
+
 
 // ---------------------------------------------------------
 // FETCH ALL PROJECTS
@@ -198,6 +214,20 @@ async function getOrCreateManager(relId, stats) {
 
   if (managersCache.has(managerName)) return managersCache.get(managerName);
 
+  // 👈 جلب كائن الملف (وليس مجرد URL)
+  const managerFileObject = await getManagerFileObject(managerName);
+  
+  let imageProps = {};
+  if (managerFileObject) {
+    console.log("🖼 Manager file object retrieved.");
+    imageProps["الصورة الشخصية للموظف"] = { // يجب أن يتطابق مع خاصية Files & Media في MANAGERS_DB
+      files: [managerFileObject]
+    };
+  } else {
+    console.log("🖼 No image file object to update.");
+  }
+
+
   const found = await notion.databases.query({
     database_id: MANAGERS_DB,
     filter: {
@@ -211,14 +241,27 @@ async function getOrCreateManager(relId, stats) {
   if (found.results.length) {
     managerPageId = found.results[0].id;
     console.log("📄 Existing manager page:", managerPageId);
+    
+    // تحديث الصفحة الموجودة بالصورة
+    if (Object.keys(imageProps).length > 0) {
+        await notion.pages.update({
+            page_id: managerPageId,
+            properties: imageProps,
+        });
+        console.log("✅ Image updated in existing manager page.");
+    }
+    
   } else {
+    // إنشاء الصفحة الجديدة
     const created = await notion.pages.create({
       parent: { database_id: MANAGERS_DB },
       properties: {
         "اسم مدير المشروع": {
           title: [{ text: { content: managerName } }],
-        }
-      }
+        },
+        // إضافة خاصية الصورة عند الإنشاء
+        ...imageProps
+      },
     });
 
     managerPageId = created.id;
@@ -228,31 +271,6 @@ async function getOrCreateManager(relId, stats) {
 
   // INLINE DB
   const projectsDbId = await ensureProjectsDB(managerPageId);
-
-  // IMAGE
-  const imageUrl = await getManagerImage(managerName);
-  console.log("🔗 Image URL:", imageUrl);
-
-  console.log("🖼 Updating MANAGER IMAGE PROPERTY…");
-
-  await notion.pages.update({
-    page_id: managerPageId,
-    properties: {
-      "الصوره الشخصية للموظف": {
-        files: imageUrl
-          ? [
-              {
-                name: managerName + ".jpg",
-                type: "file",
-                file: { url: imageUrl }   // 👈 FIXED HERE
-              }
-            ]
-          : []
-      }
-    }
-  });
-
-  console.log("✅ Image updated in manager page.");
 
   const obj = { managerPageId, managerName, projectsDbId };
   managersCache.set(managerName, obj);
@@ -318,7 +336,7 @@ async function processProject(page, stats) {
   const managers = getRelations(page, "مدير المشروع");
 
   console.log(`\n📂 Project: ${name}`);
-  console.log("Managers:", managers);
+  // console.log("Managers:", managers); // تم إزالة طباعة المعرّفات لتكون النتيجة أنظف
 
   if (!managers.length) return;
 
