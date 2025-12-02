@@ -1,398 +1,296 @@
-```js
-import { Client } from "@notionhq/client";
-import "dotenv/config";
+from notion_client import Client
+from config import NOTION_TOKEN, PROJECTS_DB_ID, MANAGERS_DB_ID, TEMPLATE_PAGE_ID
+from helpers import (
+    get_property_value, find_child_database_id, transform_template_blocks
+)
 
-// ======================
-// Helpers: ENV Validation
-// ======================
-function assertEnv(name) {
-  if (!process.env[name]) {
-    throw new Error(`Missing env var: ${name}`);
-  }
-}
-
-assertEnv("NOTION_TOKEN");
-assertEnv("PROJECTS_DB");
-assertEnv("MANAGERS_DB");
-assertEnv("TEMPLATE_PAGE_ID");
-
-// ======================
-// Notion Client + Constants
-// ======================
-const notion = new Client({ auth: process.env.NOTION_TOKEN });
-
-const PROJECTS_DB = process.env.PROJECTS_DB; // داتابيس المشاريع الأساسية
-const MANAGERS_DB = process.env.MANAGERS_DB; // داتابيس مدراء المشاريع
-const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID; // صفحة التيمبليت
-
-const PROJECT_MANAGER_FIELD = "مدير المشروع"; // اسم العلاقة في داتابيس المشاريع
-const CHILD_DB_TITLE = "مشاريعك"; // اسم داتابيس المشاريع داخل صفحة المدير
-
-// كاش للمدراء عشان نقلل عدد طلبات Notion
-// key: managerName, value: { managerMainPageId, childDbId }
-const managerCache = new Map();
-
-// إحصائيات بسيطة
-const stats = {
-  projectsProcessed: 0,
-  projectsInserted: 0,
-  projectsUpdated: 0,
-  managersCreated: 0,
-};
-
-// ======================
-// Helpers: قراءة خصائص الصفحة
-// ======================
-function getPageTitle(page, fallback = "بدون عنوان") {
-  const props = page.properties;
-  for (const key in props) {
-    if (props[key]?.type === "title") {
-      return props[key].title?.[0]?.plain_text || fallback;
-    }
-  }
-  return fallback;
-}
-
-function getTitleProp(page, propName, fallback = "بدون اسم") {
-  const prop = page.properties[propName];
-  if (prop?.type === "title" && prop.title[0]?.plain_text) {
-    return prop.title[0].plain_text;
-  }
-  return fallback;
-}
-
-function getSelectName(page, propName) {
-  const prop = page.properties[propName];
-  if (prop?.type === "select" && prop.select?.name) {
-    return prop.select.name;
-  }
-  return null;
-}
-
-function getFormulaNumber(page, propName) {
-  const prop = page.properties[propName];
-  if (prop?.type === "formula" && typeof prop.formula?.number === "number") {
-    return prop.formula.number;
-  }
-  return null;
-}
-
-// ======================
-// إيجاد داتا بيس "مشاريعك" داخل صفحة المدير
-// ======================
-async function findChildProjectsDb(managerPageId) {
-  let cursor = undefined;
-
-  do {
-    const res = await notion.blocks.children.list({
-      block_id: managerPageId,
-      page_size: 50,
-      start_cursor: cursor,
-    });
-
-    for (const block of res.results) {
-      if (block.type === "child_database") {
-        if (block.child_database.title === CHILD_DB_TITLE) {
-          return block.id;
-        }
-      }
-    }
-
-    cursor = res.has_more ? res.next_cursor || undefined : undefined;
-  } while (cursor);
-
-  return null;
-}
-
-// ======================
-// نسخ محتوى التيمبليت لصفحة معيّنة
-// - ينسخ كل البلوكات العادية
-// - لو لقى child_database → ينشئ داتابيس جديد بنفس السكيمة
-// ======================
-async function copyTemplateContentToPage(targetPageId) {
-  console.log(`📦 Copying template blocks into page: ${targetPageId}`);
-
-  let cursor = undefined;
-
-  do {
-    const res = await notion.blocks.children.list({
-      block_id: TEMPLATE_PAGE_ID,
-      page_size: 50,
-      start_cursor: cursor,
-    });
-
-    const normalBlocks = [];
-
-    for (const block of res.results) {
-      // لو البلوك داتابيس
-      if (block.type === "child_database") {
-        console.log(
-          `🗂 Found child_database in template → cloning as inline DB in target page`
-        );
-
-        const templateDbId = block.id;
-
-        // نجيب معلومات الداتابيس الأصلي
-        const dbInfo = await notion.databases.retrieve({
-          database_id: templateDbId,
-        });
-
-        // نجهز properties بدون id (عشان ما يعطي validation_error)
-        const newProperties = {};
-        for (const [name, prop] of Object.entries(dbInfo.properties)) {
-          const { id, ...rest } = prop;
-          newProperties[name] = rest;
+class ProjectProcessor:
+    def __init__(self, notion_token, projects_db_id, managers_db_id, template_page_id):
+        self.notion = Client(auth=notion_token)
+        self.projects_db_id = projects_db_id
+        self.managers_db_id = managers_db_id
+        self.template_page_id = template_page_id
+        
+        # Caching لصفحات المديرين: {manager_name: manager_page_id}
+        self.manager_cache = {}
+        
+        # Statistics
+        self.stats = {
+            "processed_projects": 0,
+            "added_projects": 0,
+            "updated_projects": 0,
+            "new_manager_pages": 0,
+            "errors": 0,
         }
 
-        // ننشئ داتابيس جديد داخل صفحة المدير
-        await notion.databases.create({
-          parent: { type: "page_id", page_id: targetPageId },
-          title: dbInfo.title, // نفس العنوان
-          properties: newProperties, // نفس الأعمدة
-        });
+    def _get_or_create_manager(self, manager_name: str, original_manager_page_id: str) -> str:
+        """
+        يجد أو ينشئ صفحة مدير في MANAGERS_DB ويقوم بالتخزين المؤقت.
+        """
+        # 1. البحث في الـCache
+        if manager_name in self.manager_cache:
+            return self.manager_cache[manager_name]
 
-        console.log(`✅ Cloned inline database in manager page`);
-      } else if (block.object === "block") {
-        // باقي البلوكات العادية ننسخها كما هي
-        const { type } = block;
-        normalBlocks.push({
-          object: "block",
-          type,
-          [type]: block[type],
-        });
-      }
-    }
+        # 2. البحث في MANAGERS_DB
+        try:
+            results = self.notion.databases.query(
+                database_id=self.managers_db_id,
+                filter={
+                    "property": "اسم مدير المشروع",
+                    "title": {"equals": manager_name},
+                }
+            ).get('results')
+            
+            if results:
+                manager_page_id = results[0]['id']
+                self.manager_cache[manager_name] = manager_page_id
+                print(f"✅ تم إيجاد مدير: {manager_name}")
+                return manager_page_id
 
-    if (normalBlocks.length) {
-      await notion.blocks.children.append({
-        block_id: targetPageId,
-        children: normalBlocks,
-      });
-    }
+        except Exception as e:
+            print(f"❌ خطأ في البحث عن مدير: {manager_name}. الخطأ: {e}")
+            
+        # 3. عدم الإيجاد → إنشاء صفحة جديدة ونسخ المحتوى
+        print(f"⭐ لا يوجد مدير باسم: {manager_name}. جاري الإنشاء والنسخ...")
+        try:
+            # أ. إنشاء الصفحة
+            new_page = self.notion.pages.create(
+                parent={"database_id": self.managers_db_id},
+                properties={
+                    "اسم مدير المشروع": {
+                        "title": [{"text": {"content": manager_name}}]
+                    }
+                }
+            )
+            manager_page_id = new_page['id']
+            self.manager_cache[manager_name] = manager_page_id
+            self.stats["new_manager_pages"] += 1
 
-    cursor = res.has_more ? res.next_cursor || undefined : undefined;
-  } while (cursor);
-}
+            # ب. نسخ محتوى التيمبليت
+            self._copy_template_content(manager_page_id)
+            
+            return manager_page_id
 
-// ======================
-// التأكد من وجود داتابيس "مشاريعك" داخل صفحة المدير
-// إذا ما وُجدت → ننسخ التيمبليت ثم نبحث مرة ثانية
-// ======================
-async function ensureChildDbExists(managerPageId) {
-  // أولاً نحاول نلقاه
-  let childDbId = await findChildProjectsDb(managerPageId);
-  if (childDbId) return childDbId;
+        except Exception as e:
+            print(f"❌ خطأ في إنشاء صفحة مدير أو نسخ التيمبليت: {manager_name}. الخطأ: {e}")
+            return None
 
-  console.log(
-    `🧩 No child DB "${CHILD_DB_TITLE}" in manager page → copying template content...`
-  );
 
-  // ننسخ محتوى التيمبليت (مع استنساخ الداتابيس)
-  await copyTemplateContentToPage(managerPageId);
+    def _copy_template_content(self, target_page_id):
+        """
+        ينسخ محتوى التيمبليت (بما في ذلك إنشاء child_database جديد) إلى الصفحة الهدف.
+        """
+        try:
+            # 1. جلب بلوكات التيمبليت
+            template_blocks = self.notion.blocks.children.list(
+                block_id=self.template_page_id
+            ).get('results')
 
-  // نبحث مرة ثانية بعد النسخ
-  childDbId = await findChildProjectsDb(managerPageId);
-  if (!childDbId) {
-    console.log(
-      `❌ ERROR: Still no child DB "${CHILD_DB_TITLE}" after copying template content!`
-    );
-  } else {
-    console.log(`✅ Child DB "${CHILD_DB_TITLE}" found after copy`);
-  }
+            # 2. تحويل البلوكات للنسخ (خاصة child_database)
+            new_children_blocks = transform_template_blocks(template_blocks, self.notion)
 
-  return childDbId;
-}
+            # 3. إلحاق البلوكات بالصفحة الهدف
+            if new_children_blocks:
+                self.notion.blocks.children.append(
+                    block_id=target_page_id,
+                    children=new_children_blocks
+                )
+                print(f"✅ تم نسخ {len(new_children_blocks)} بلوك من التيمبليت.")
+        except Exception as e:
+            print(f"❌ خطأ حرج في نسخ محتوى التيمبليت إلى {target_page_id}. الخطأ: {e}")
 
-// ======================
-// إنشاء صفحة مدير جديدة + نسخ التيمبليت عليها
-// ======================
-async function duplicateTemplate(managerName) {
-  console.log(`\n📄 Creating page for manager: ${managerName}`);
 
-  // إنشاء صفحة جديدة في MANAGERS_DB
-  const page = await notion.pages.create({
-    parent: { database_id: MANAGERS_DB },
-    properties: {
-      "اسم مدير المشروع": {
-        title: [
-          {
-            type: "text",
-            text: { content: managerName },
-          },
-        ],
-      },
-    },
-  });
+    def _find_or_create_projects_db(self, manager_page_id: str) -> str or None:
+        """
+        يتأكد من وجود child_database بعنوان "مشاريعك" داخل صفحة المدير.
+        إذا لم يوجد، يقوم بنسخ التيمبليت ثم يبحث مجدداً.
+        """
+        # 1. البحث الأولي عن child_database "مشاريعك"
+        try:
+            manager_blocks = self.notion.blocks.children.list(
+                block_id=manager_page_id
+            ).get('results')
+            
+            db_id = find_child_database_id(manager_blocks, "مشاريعك")
+            if db_id:
+                return db_id
+        except Exception as e:
+            print(f"❌ خطأ في جلب بلوكات صفحة المدير {manager_page_id}: {e}")
+            return None
 
-  const newPageId = page.id;
-  stats.managersCreated++;
+        # 2. إذا لم يتم العثور → نسخ التيمبليت ثم البحث مرة أخرى
+        print(f"⚠️ لم يتم العثور على 'مشاريعك' في صفحة المدير {manager_page_id}. جاري محاولة النسخ والبحث مجدداً...")
+        self._copy_template_content(manager_page_id) # قد يكون تم نسخه بالفعل في _get_or_create_manager
+        
+        try:
+            # البحث مرة أخرى بعد عملية النسخ
+            manager_blocks_after_copy = self.notion.blocks.children.list(
+                block_id=manager_page_id
+            ).get('results')
+            
+            db_id_after_copy = find_child_database_id(manager_blocks_after_copy, "مشاريعك")
+            if db_id_after_copy:
+                print("✅ تم العثور على 'مشاريعك' بعد النسخ بنجاح.")
+                return db_id_after_copy
+            else:
+                print(f"❌ فشل حرج: لم يتم العثور على child_database 'مشاريعك' حتى بعد محاولة النسخ لـ: {manager_page_id}")
+                self.stats["errors"] += 1
+                return None
+        except Exception as e:
+            print(f"❌ خطأ في البحث الثاني عن 'مشاريعك': {e}")
+            self.stats["errors"] += 1
+            return None
 
-  // نسخ محتوى التيمبليت لهذه الصفحة (مع استنساخ الداتابيس)
-  await copyTemplateContentToPage(newPageId);
 
-  console.log(
-    `✅ Page created & template content copied → Page ID: ${newPageId}`
-  );
-  return newPageId;
-}
+    def _upsert_project_in_manager_db(self, manager_db_id: str, project_data: dict):
+        """
+        يحدث صفحة المشروع إذا وجدت، أو ينشئها داخل داتابيس المدير.
+        """
+        project_name = project_data['name']
+        
+        # 1. البحث عن المشروع بنفس الاسم
+        try:
+            results = self.notion.databases.query(
+                database_id=manager_db_id,
+                filter={
+                    "property": "اسم المشروع",
+                    "title": {"equals": project_name},
+                }
+            ).get('results')
+            
+            # 2. إعداد الخصائص للتحديث/الإنشاء
+            update_properties = {
+                "اسم المشروع": {
+                    "title": [{"text": {"content": project_name}}]
+                },
+                "حالة المشروع": {
+                    "select": {"name": project_data['status']}
+                },
+                "المبلغ المتبقي": {
+                    "number": project_data['remaining_amount']
+                },
+            }
 
-// ======================
-// إيجاد أو إنشاء صفحة المدير في MANAGERS_DB
-// ======================
-async function findOrCreateManagerPage(managerName) {
-  console.log(`\n🔍 Searching manager page in MANAGERS_DB: ${managerName}`);
+            if results:
+                # تحديث
+                project_page_id = results[0]['id']
+                self.notion.pages.update(
+                    page_id=project_page_id,
+                    properties=update_properties
+                )
+                self.stats["updated_projects"] += 1
+                print(f"   ⬆️ تم تحديث المشروع: {project_name}")
+            else:
+                # إنشاء
+                self.notion.pages.create(
+                    parent={"database_id": manager_db_id},
+                    properties=update_properties
+                )
+                self.stats["added_projects"] += 1
+                print(f"   ➕ تم إضافة المشروع الجديد: {project_name}")
 
-  const search = await notion.databases.query({
-    database_id: MANAGERS_DB,
-    filter: {
-      property: "اسم مدير المشروع",
-      title: { equals: managerName },
-    },
-  });
+        except Exception as e:
+            print(f"   ❌ خطأ في عملية Upsert للمشروع {project_name} في داتابيس المدير: {e}")
+            self.stats["errors"] += 1
 
-  if (search.results.length > 0) {
-    console.log(`✔️ Found existing manager page`);
-    return search.results[0].id;
-  }
 
-  console.log(`➕ Manager page not found → creating from template`);
-  return await duplicateTemplate(managerName);
-}
+    def process_project(self, project_page):
+        """
+        المنطق الرئيسي لمعالجة مشروع واحد.
+        """
+        project_name = get_property_value(project_page, "اسم المشروع", 'title')
+        project_status = get_property_value(project_page, "حالة المشروع", 'select')
+        project_amount = get_property_value(project_page, "المبلغ المتبقي", 'formula.number')
+        manager_relation_ids = get_property_value(project_page, "مدير المشروع", 'relation')
+        
+        self.stats["processed_projects"] += 1
+        print(f"\n--- جاري معالجة المشروع: {project_name} ---")
 
-// ======================
-// إضافة/تعديل مشروع داخل "مشاريعك"
-// ======================
-async function upsertProject(childDbId, projectName, status, remaining) {
-  const props = {
-    "اسم المشروع": {
-      title: [{ text: { content: projectName } }],
-    },
-  };
+        if not all([project_name, project_status, project_amount, manager_relation_ids]):
+            print("⚠️ تجاهل المشروع: بيانات أساسية مفقودة (الاسم/الحالة/المبلغ/المدير).")
+            self.stats["errors"] += 1
+            return
 
-  if (status) {
-    props["حالة المشروع"] = { select: { name: status } };
-  }
-  if (remaining != null) {
-    props["المتبقي"] = { number: remaining };
-  }
-
-  // هل موجود نفس المشروع؟
-  const existing = await notion.databases.query({
-    database_id: childDbId,
-    filter: {
-      property: "اسم المشروع",
-      title: { equals: projectName },
-    },
-  });
-
-  if (existing.results.length > 0) {
-    console.log(`✏️ Updating project in manager DB: ${projectName}`);
-    await notion.pages.update({
-      page_id: existing.results[0].id,
-      properties: props,
-    });
-    stats.projectsUpdated++;
-  } else {
-    console.log(`➕ Adding new project in manager DB: ${projectName}`);
-    await notion.pages.create({
-      parent: { database_id: childDbId },
-      properties: props,
-    });
-    stats.projectsInserted++;
-  }
-}
-
-// ======================
-// الحصول على (managerMainPageId + childDbId) من الكاش أو من Notion
-// ======================
-async function getManagerPagesForName(managerName) {
-  if (managerCache.has(managerName)) {
-    return managerCache.get(managerName);
-  }
-
-  const managerMainPageId = await findOrCreateManagerPage(managerName);
-  const childDbId = await ensureChildDbExists(managerMainPageId);
-
-  const value = { managerMainPageId, childDbId };
-  managerCache.set(managerName, value);
-  return value;
-}
-
-// ======================
-// مزامنة كل المشاريع
-// ======================
-async function sync() {
-  console.log("🚀 Starting SYNC...");
-
-  let cursor = undefined;
-
-  do {
-    const res = await notion.databases.query({
-      database_id: PROJECTS_DB,
-      page_size: 50,
-      start_cursor: cursor,
-    });
-
-    for (const project of res.results) {
-      stats.projectsProcessed++;
-
-      try {
-        const projectName = getTitleProp(project, "اسم المشروع", "بدون اسم");
-        const status = getSelectName(project, "حالة المشروع");
-        const remaining = getFormulaNumber(project, "المبلغ المتبقي");
-
-        const managersProp = project.properties[PROJECT_MANAGER_FIELD];
-        const managers = managersProp?.type === "relation"
-          ? managersProp.relation
-          : [];
-
-        if (!managers.length) {
-          console.log(`⚠️ Project "${projectName}" has no manager`);
-          continue;
+        project_data = {
+            "name": project_name,
+            "status": project_status,
+            "remaining_amount": project_amount,
         }
 
-        for (const m of managers) {
-          // صفحة المدير المرتبطة من علاقة "مدير المشروع" في PROJECTS_DB
-          const managerPage = await notion.pages.retrieve({
-            page_id: m.id,
-          });
+        # جلب معلومات المديرين لكل علاقة
+        for manager_page_id_rel in manager_relation_ids:
+            try:
+                # 1. جلب صفحة المدير الأصلية لاستخراج الاسم
+                manager_page_rel = self.notion.pages.retrieve(page_id=manager_page_id_rel)
+                manager_name = get_property_value(manager_page_rel, "Name", 'title')
+                
+                if not manager_name:
+                    print(f"⚠️ فشل في استخراج اسم المدير من صفحة العلاقة {manager_page_id_rel}. تجاهل هذا المدير.")
+                    continue
 
-          const managerName = getPageTitle(managerPage, "مدير بدون اسم");
+                # 2. الحصول على أو إنشاء صفحة المدير في MANAGERS_DB
+                manager_page_in_db_id = self._get_or_create_manager(manager_name, manager_page_id_rel)
+                
+                if not manager_page_in_db_id:
+                    print(f"❌ فشل حرج في الحصول على صفحة المدير {manager_name} في MANAGERS_DB. تخطي.")
+                    self.stats["errors"] += 1
+                    continue
 
-          // من MANAGERS_DB: صفحة المدير + داتابيس "مشاريعك"
-          const { childDbId } = await getManagerPagesForName(managerName);
+                # 3. إيجاد child_database "مشاريعك" داخل صفحة المدير
+                manager_projects_db_id = self._find_or_create_projects_db(manager_page_in_db_id)
 
-          if (!childDbId) {
-            console.log(
-              `❌ ERROR: No child DB "${CHILD_DB_TITLE}" found/created in manager page for: ${managerName}`
-            );
-            continue;
-          }
+                if manager_projects_db_id:
+                    # 4. تحديث/إنشاء المشروع داخل داتابيس المدير
+                    self._upsert_project_in_manager_db(manager_projects_db_id, project_data)
+                else:
+                    print(f"❌ تخطي عملية Upsert: فشل في إيجاد 'مشاريعك' لـ {manager_name}.")
+                    self.stats["errors"] += 1
 
-          // تحديث/إضافة المشروع داخل داتابيس "مشاريعك"
-          await upsertProject(childDbId, projectName, status, remaining);
-        }
-      } catch (err) {
-        console.error(
-          `❌ Error while processing project ${project.id}:`,
-          err.message || err
-        );
-      }
-    }
+            except Exception as e:
+                print(f"❌ خطأ غير متوقع أثناء معالجة مدير المشروع {manager_page_id_rel}. الخطأ: {e}")
+                self.stats["errors"] += 1
 
-    cursor = res.has_more ? res.next_cursor || undefined : undefined;
-  } while (cursor);
 
-  console.log("\n🎉 SYNC FINISHED");
-  console.log("=== SYNC SUMMARY ===");
-  console.log(stats);
-}
+    def run(self):
+        """
+        تشغيل السكربت.
+        """
+        print("🚀 بدء تشغيل سكريبت مزامنة مشاريع Notion...")
+        
+        # 1. جلب جميع المشاريع من PROJECTS_DB
+        try:
+            results = self.notion.databases.query(
+                database_id=self.projects_db_id
+            ).get('results')
+            
+            print(f"🔍 تم جلب {len(results)} مشروع من قاعدة البيانات.")
+            
+            # 2. معالجة كل مشروع (مع try/catch لضمان الاستمرارية)
+            for project_page in results:
+                try:
+                    self.process_project(project_page)
+                except Exception as e:
+                    print(f"❌ فشل معالجة مشروع بالكامل (Try/Catch). الخطأ: {e}")
+                    self.stats["errors"] += 1
+            
+            print("\n--- ✅ انتهت معالجة جميع المشاريع ---")
+            print("## 📊 الإحصائيات النهائية:")
+            for key, value in self.stats.items():
+                print(f"* {key.replace('_', ' ').title()}: **{value}**")
 
-// ======================
-// تشغيل السكربت
-// ======================
-sync().catch((err) => {
-  console.error("❌ Fatal error in SYNC:", err);
-  process.exit(1);
-});
-```
+        except Exception as e:
+            print(f"\n❌ خطأ حرج في جلب قاعدة بيانات المشاريع: {e}")
+            print("🚨 السكربت توقف مبكراً.")
+
+if __name__ == "__main__":
+    # تأكد من أن validate_env() تم استدعائها بنجاح في config.py
+    if all([NOTION_TOKEN, PROJECTS_DB_ID, MANAGERS_DB_ID, TEMPLATE_PAGE_ID]):
+        processor = ProjectProcessor(
+            notion_token=NOTION_TOKEN,
+            projects_db_id=PROJECTS_DB_ID,
+            managers_db_id=MANAGERS_DB_ID,
+            template_page_id=TEMPLATE_PAGE_ID,
+        )
+        processor.run()
+    else:
+        print("\nيرجى تصحيح الأخطاء في الإعدادات والمتغيرات البيئية قبل التشغيل.")
