@@ -28,4 +28,5 @@ jobs:
           PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
           MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
           TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
+          HR_DB: ${{ secrets.HR_DB }}
         run: node src/index.js
