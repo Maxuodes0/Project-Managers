@@ -117,6 +117,10 @@ async function createInlineProjectsDB(managerPageId) {
       },
     ],
     properties: cleanProps,
+    // **********************************************
+    // 👈 التعديل هنا: لجعل قاعدة البيانات مضمنة (Inline)
+    is_inline: true,
+    // **********************************************
   });
 
   console.log("✅ INLINE DB CREATED:", newDb.id);
@@ -185,7 +189,7 @@ async function getOrCreateManager(relId, stats) {
       },
     });
 
-    managerPageId = created.id;  // <-- FIXED
+    managerPageId = created.id;
     stats.newManagerPages++;
   }
 
