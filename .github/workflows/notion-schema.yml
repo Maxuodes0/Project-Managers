@@ -13,28 +13,26 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 1. تغيير: استخدام بيئة Python بدلاً من Node.js
       - name: Use Python 3.x
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      # 2. تغيير: تثبيت التبعيات باستخدام pip
-      # يفترض أن لديك ملف requirements.txt يحتوي على notion-client و python-dotenv
-      # أو يمكنك تثبيتها مباشرة كما يلي:
+      # تثبيت التبعيات باستخدام pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install notion-client python-dotenv 
 
-      # 3. تعديل: تمرير المتغيرات وتشغيل الملف بصيغة Python
+      # تمرير المتغيرات باستخدام أسماء Secrets الجديدة
       - name: Run Notion schema logger
         env:
+          # استخدام أسماء الأسرار كما هي بالضبط
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          PROJECTS_DB_ID: ${{ secrets.PROJECTS_DB_ID }} # تم تعديل الاسم ليتوافق مع كود Python
-          MANAGERS_DB_ID: ${{ secrets.MANAGERS_DB_ID }} # تم تعديل الاسم ليتوافق مع كود Python
-          SUB_DB_NAME: ${{ secrets.SUB_DB_NAME }} 
+          PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
+          MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
+          SUB_DB_NAME: ${{ secrets.SUB_DB_NAME }}
           TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
 
-        # تغيير الأمر لتشغيل ملف Python
+        # تشغيل ملف Python
         run: python src/index.py
