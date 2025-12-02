@@ -10,10 +10,11 @@ dotenv.config();
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const PROJECTS_DB = process.env.PROJECTS_DB;
 const MANAGERS_DB = process.env.MANAGERS_DB;
+const HR_DB = process.env.HR_DB; // 👈 إضافة قاعدة بيانات الموارد البشرية
 const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID;
 
 function validateEnv() {
-  const req = { NOTION_TOKEN, PROJECTS_DB, MANAGERS_DB, TEMPLATE_PAGE_ID };
+  const req = { NOTION_TOKEN, PROJECTS_DB, MANAGERS_DB, HR_DB, TEMPLATE_PAGE_ID }; // 👈 تحديث التحقق
   const missing = Object.entries(req)
     .filter(([, v]) => !v)
     .map(([k]) => k);
@@ -47,6 +48,38 @@ function getPageTitle(pg) {
   );
   return pg.properties[key]?.title?.map(t => t.plain_text).join("") || null;
 }
+
+// 👈 دالة جديدة لجلب كائن الملف (لصورة الموظف)
+function getNotionFileObject(page, prop) {
+  const files = page.properties[prop]?.files;
+  if (!files || files.length === 0) return null;
+
+  // نفترض أننا نأخذ أول ملف فقط
+  const file = files[0];
+  
+  if (file.type === "file") {
+      // ملف مستضاف على Notion (يجب استخدام expiry_time)
+      return {
+          name: file.name,
+          type: "file",
+          file: {
+              url: file.file.url,
+              expiry_time: file.file.expiry_time
+          }
+      };
+  } else if (file.type === "external") {
+      // رابط خارجي
+      return {
+          name: file.name,
+          type: "external",
+          external: {
+              url: file.external.url
+          }
+      };
+  }
+  return null;
+}
+
 
 // ---------------------------------------------------------
 // CLEAN PROPERTIES (remove formula + rollup)
@@ -117,10 +150,7 @@ async function createInlineProjectsDB(managerPageId) {
       },
     ],
     properties: cleanProps,
-    // **********************************************
-    // 👈 التعديل هنا: لجعل قاعدة البيانات مضمنة (Inline)
     is_inline: true,
-    // **********************************************
   });
 
   console.log("✅ INLINE DB CREATED:", newDb.id);
@@ -167,6 +197,36 @@ async function getOrCreateManager(relId, stats) {
 
   if (managersCache.has(managerName)) return managersCache.get(managerName);
 
+  // ----------------------------------------------------
+  // 1. جلب الصورة من قاعدة بيانات الموارد البشرية (HR_DB)
+  // ----------------------------------------------------
+  const hrFound = await notion.databases.query({
+      database_id: HR_DB,
+      filter: {
+          // نفترض أن خاصية اسم الموظف في HR_DB اسمها "اسم الموظف"
+          property: "اسم الموظف", 
+          title: { equals: managerName },
+      },
+      page_size: 1,
+  });
+
+  let imageProps = {};
+  if (hrFound.results.length) {
+      const hrPage = hrFound.results[0];
+      // نفترض أن خاصية الصورة في HR_DB اسمها "الصورة الشخصية"
+      const notionFileObject = getNotionFileObject(hrPage, "الصورة الشخصية"); 
+
+      if (notionFileObject) {
+          // يتم بناء خاصية الملفات لإضافتها إلى صفحة المدير في MANAGERS_DB
+          // نفترض أن اسم الخاصية المستهدفة في MANAGERS_DB هو "الصورة الشخصية"
+          imageProps["الصورة الشخصية"] = {
+              files: [notionFileObject]
+          };
+      }
+  }
+  // ----------------------------------------------------
+
+
   const found = await notion.databases.query({
     database_id: MANAGERS_DB,
     filter: {
@@ -179,6 +239,15 @@ async function getOrCreateManager(relId, stats) {
 
   if (found.results.length) {
     managerPageId = found.results[0].id;
+    
+    // 2. تحديث الصفحة الموجودة بالصورة
+    if (Object.keys(imageProps).length > 0) {
+        await notion.pages.update({
+            page_id: managerPageId,
+            properties: imageProps,
+        });
+    }
+
   } else {
     const created = await notion.pages.create({
       parent: { database_id: MANAGERS_DB },
@@ -186,6 +255,8 @@ async function getOrCreateManager(relId, stats) {
         "اسم مدير المشروع": {
           title: [{ text: { content: managerName } }],
         },
+        // 3. إضافة خاصية الصورة عند الإنشاء
+        ...imageProps 
       },
     });
 
@@ -202,7 +273,7 @@ async function getOrCreateManager(relId, stats) {
 }
 
 // ---------------------------------------------------------
-// UPSERT PROJECT
+// UPSERT PROJECT (لا يتطلب تعديل)
 // ---------------------------------------------------------
 async function upsertProject({
   managerProjectsDbId,
@@ -253,7 +324,7 @@ async function upsertProject({
 }
 
 // ---------------------------------------------------------
-// PROCESS PROJECT
+// PROCESS PROJECT (لا يتطلب تعديل)
 // ---------------------------------------------------------
 async function processProject(page, stats) {
   stats.total++;
