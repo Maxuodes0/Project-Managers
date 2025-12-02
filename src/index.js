@@ -1,29 +1,80 @@
+```js
 import { Client } from "@notionhq/client";
 import "dotenv/config";
 
-const notion = new Client({ auth: process.env.NOTION_TOKEN });
+// ======================
+// Helpers: ENV Validation
+// ======================
+function assertEnv(name) {
+  if (!process.env[name]) {
+    throw new Error(`Missing env var: ${name}`);
+  }
+}
+
+assertEnv("NOTION_TOKEN");
+assertEnv("PROJECTS_DB");
+assertEnv("MANAGERS_DB");
+assertEnv("TEMPLATE_PAGE_ID");
 
 // ======================
-// ثوابت
+// Notion Client + Constants
 // ======================
-const PROJECTS_DB = process.env.PROJECTS_DB;      // داتابيس المشاريع الأساسية
-const MANAGERS_DB = process.env.MANAGERS_DB;      // داتابيس مدراء المشاريع
+const notion = new Client({ auth: process.env.NOTION_TOKEN });
+
+const PROJECTS_DB = process.env.PROJECTS_DB; // داتابيس المشاريع الأساسية
+const MANAGERS_DB = process.env.MANAGERS_DB; // داتابيس مدراء المشاريع
 const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID; // صفحة التيمبليت
 
 const PROJECT_MANAGER_FIELD = "مدير المشروع"; // اسم العلاقة في داتابيس المشاريع
-const CHILD_DB_TITLE = "مشاريعك"; // اسم داتابيس المشاريع داخل صفحة المدير (غيره لو اسمك مختلف)
+const CHILD_DB_TITLE = "مشاريعك"; // اسم داتابيس المشاريع داخل صفحة المدير
+
+// كاش للمدراء عشان نقلل عدد طلبات Notion
+// key: managerName, value: { managerMainPageId, childDbId }
+const managerCache = new Map();
+
+// إحصائيات بسيطة
+const stats = {
+  projectsProcessed: 0,
+  projectsInserted: 0,
+  projectsUpdated: 0,
+  managersCreated: 0,
+};
 
 // ======================
-// جلب عنوان أي صفحة
+// Helpers: قراءة خصائص الصفحة
 // ======================
-function getPageTitle(page) {
+function getPageTitle(page, fallback = "بدون عنوان") {
   const props = page.properties;
   for (const key in props) {
     if (props[key]?.type === "title") {
-      return props[key].title?.[0]?.plain_text || "بدون عنوان";
+      return props[key].title?.[0]?.plain_text || fallback;
     }
   }
-  return "بدون عنوان";
+  return fallback;
+}
+
+function getTitleProp(page, propName, fallback = "بدون اسم") {
+  const prop = page.properties[propName];
+  if (prop?.type === "title" && prop.title[0]?.plain_text) {
+    return prop.title[0].plain_text;
+  }
+  return fallback;
+}
+
+function getSelectName(page, propName) {
+  const prop = page.properties[propName];
+  if (prop?.type === "select" && prop.select?.name) {
+    return prop.select.name;
+  }
+  return null;
+}
+
+function getFormulaNumber(page, propName) {
+  const prop = page.properties[propName];
+  if (prop?.type === "formula" && typeof prop.formula?.number === "number") {
+    return prop.formula.number;
+  }
+  return null;
 }
 
 // ======================
@@ -97,7 +148,6 @@ async function copyTemplateContentToPage(targetPageId) {
         await notion.databases.create({
           parent: { type: "page_id", page_id: targetPageId },
           title: dbInfo.title, // نفس العنوان
-          is_inline: true, // يكون inline داخل الصفحة
           properties: newProperties, // نفس الأعمدة
         });
 
@@ -126,7 +176,7 @@ async function copyTemplateContentToPage(targetPageId) {
 
 // ======================
 // التأكد من وجود داتابيس "مشاريعك" داخل صفحة المدير
-// إذا ما وُجدت → ننسخ التيمبليت (مع استنساخ الداتابيس) ثم نبحث مرة ثانية
+// إذا ما وُجدت → ننسخ التيمبليت ثم نبحث مرة ثانية
 // ======================
 async function ensureChildDbExists(managerPageId) {
   // أولاً نحاول نلقاه
@@ -175,6 +225,7 @@ async function duplicateTemplate(managerName) {
   });
 
   const newPageId = page.id;
+  stats.managersCreated++;
 
   // نسخ محتوى التيمبليت لهذه الصفحة (مع استنساخ الداتابيس)
   await copyTemplateContentToPage(newPageId);
@@ -186,10 +237,10 @@ async function duplicateTemplate(managerName) {
 }
 
 // ======================
-// إيجاد أو إنشاء صفحة المدير
+// إيجاد أو إنشاء صفحة المدير في MANAGERS_DB
 // ======================
 async function findOrCreateManagerPage(managerName) {
-  console.log(`\n🔍 Searching manager page: ${managerName}`);
+  console.log(`\n🔍 Searching manager page in MANAGERS_DB: ${managerName}`);
 
   const search = await notion.databases.query({
     database_id: MANAGERS_DB,
@@ -200,11 +251,11 @@ async function findOrCreateManagerPage(managerName) {
   });
 
   if (search.results.length > 0) {
-    console.log(`✔️ Found existing page`);
+    console.log(`✔️ Found existing manager page`);
     return search.results[0].id;
   }
 
-  console.log(`➕ Page not found → creating from template`);
+  console.log(`➕ Manager page not found → creating from template`);
   return await duplicateTemplate(managerName);
 }
 
@@ -235,18 +286,36 @@ async function upsertProject(childDbId, projectName, status, remaining) {
   });
 
   if (existing.results.length > 0) {
-    console.log(`✏️ Updating project: ${projectName}`);
+    console.log(`✏️ Updating project in manager DB: ${projectName}`);
     await notion.pages.update({
       page_id: existing.results[0].id,
       properties: props,
     });
+    stats.projectsUpdated++;
   } else {
-    console.log(`➕ Adding new project: ${projectName}`);
+    console.log(`➕ Adding new project in manager DB: ${projectName}`);
     await notion.pages.create({
       parent: { database_id: childDbId },
       properties: props,
     });
+    stats.projectsInserted++;
   }
+}
+
+// ======================
+// الحصول على (managerMainPageId + childDbId) من الكاش أو من Notion
+// ======================
+async function getManagerPagesForName(managerName) {
+  if (managerCache.has(managerName)) {
+    return managerCache.get(managerName);
+  }
+
+  const managerMainPageId = await findOrCreateManagerPage(managerName);
+  const childDbId = await ensureChildDbExists(managerMainPageId);
+
+  const value = { managerMainPageId, childDbId };
+  managerCache.set(managerName, value);
+  return value;
 }
 
 // ======================
@@ -265,45 +334,49 @@ async function sync() {
     });
 
     for (const project of res.results) {
-      const projectName =
-        project.properties["اسم المشروع"].title?.[0]?.plain_text ||
-        "بدون اسم";
+      stats.projectsProcessed++;
 
-      const status =
-        project.properties["حالة المشروع"].select?.name || null;
+      try {
+        const projectName = getTitleProp(project, "اسم المشروع", "بدون اسم");
+        const status = getSelectName(project, "حالة المشروع");
+        const remaining = getFormulaNumber(project, "المبلغ المتبقي");
 
-      const remaining =
-        project.properties["المبلغ المتبقي"].formula?.number ?? null;
+        const managersProp = project.properties[PROJECT_MANAGER_FIELD];
+        const managers = managersProp?.type === "relation"
+          ? managersProp.relation
+          : [];
 
-      const managers = project.properties[PROJECT_MANAGER_FIELD].relation;
-
-      if (!managers.length) {
-        console.log(`⚠️ Project "${projectName}" has no manager`);
-        continue;
-      }
-
-      for (const m of managers) {
-        // صفحة المدير المرتبطة من علاقة "مدير المشروع"
-        const managerPage = await notion.pages.retrieve({
-          page_id: m.id,
-        });
-
-        const managerName = getPageTitle(managerPage);
-
-        // إيجاد أو إنشاء صفحة المدير في MANAGERS_DB
-        const managerMainPageId = await findOrCreateManagerPage(managerName);
-
-        // التأكد من وجود داتابيس "مشاريعك" داخل صفحة المدير (ولو ناقصة ينسخ التيمبليت)
-        const childDbId = await ensureChildDbExists(managerMainPageId);
-        if (!childDbId) {
-          console.log(
-            `❌ ERROR: No child DB "${CHILD_DB_TITLE}" found/created in manager page!`
-          );
+        if (!managers.length) {
+          console.log(`⚠️ Project "${projectName}" has no manager`);
           continue;
         }
 
-        // تحديث/إضافة المشروع داخل داتابيس "مشاريعك"
-        await upsertProject(childDbId, projectName, status, remaining);
+        for (const m of managers) {
+          // صفحة المدير المرتبطة من علاقة "مدير المشروع" في PROJECTS_DB
+          const managerPage = await notion.pages.retrieve({
+            page_id: m.id,
+          });
+
+          const managerName = getPageTitle(managerPage, "مدير بدون اسم");
+
+          // من MANAGERS_DB: صفحة المدير + داتابيس "مشاريعك"
+          const { childDbId } = await getManagerPagesForName(managerName);
+
+          if (!childDbId) {
+            console.log(
+              `❌ ERROR: No child DB "${CHILD_DB_TITLE}" found/created in manager page for: ${managerName}`
+            );
+            continue;
+          }
+
+          // تحديث/إضافة المشروع داخل داتابيس "مشاريعك"
+          await upsertProject(childDbId, projectName, status, remaining);
+        }
+      } catch (err) {
+        console.error(
+          `❌ Error while processing project ${project.id}:`,
+          err.message || err
+        );
       }
     }
 
@@ -311,12 +384,15 @@ async function sync() {
   } while (cursor);
 
   console.log("\n🎉 SYNC FINISHED");
+  console.log("=== SYNC SUMMARY ===");
+  console.log(stats);
 }
 
 // ======================
 // تشغيل السكربت
 // ======================
 sync().catch((err) => {
-  console.error(err);
+  console.error("❌ Fatal error in SYNC:", err);
   process.exit(1);
 });
+```
