@@ -17,6 +17,7 @@ function validateEnv() {
   const missing = Object.entries(req)
     .filter(([, v]) => !v)
     .map(([k]) => k);
+
   if (missing.length) {
     console.error("❌ Missing ENV:", missing.join(", "));
     process.exit(1);
@@ -29,35 +30,35 @@ const notion = new Client({ auth: NOTION_TOKEN });
 // ---------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------
-const getTitle = (page, p) =>
-  page.properties[p]?.title?.map((t) => t.plain_text).join("") || null;
+const getTitle = (page, prop) =>
+  page.properties[prop]?.title?.map((t) => t.plain_text).join("") || null;
 
-const getSelect = (page, p) => page.properties[p]?.select?.name || null;
+const getSelect = (page, prop) =>
+  page.properties[prop]?.select?.name || null;
 
-const getNumber = (page, p) =>
-  page.properties[p]?.formula?.number ?? null;
+const getNumber = (page, prop) =>
+  page.properties[prop]?.formula?.number ?? null;
 
-const getRelations = (page, p) =>
-  page.properties[p]?.relation?.map((x) => x.id) || [];
+const getRelations = (page, prop) =>
+  page.properties[prop]?.relation?.map((x) => x.id) || [];
 
-const getPageTitle = (pg) => {
+function getPageTitle(pg) {
   const key = Object.keys(pg.properties).find(
     (k) => pg.properties[k].type === "title"
   );
-  return pg.properties[key]?.title
-    ?.map((t) => t.plain_text)
-    .join("") || null;
-};
+  const t = pg.properties[key]?.title;
+  return t?.map((x) => x.plain_text).join("") || null;
+}
 
 // ---------------------------------------------------------
-// FETCH ALL PROJECTS
+// FETCH PROJECTS
 // ---------------------------------------------------------
-async function fetchAllProjectsFromDatabase(db) {
+async function fetchAllProjects(table) {
   const pages = [];
   let cursor;
   while (true) {
     const r = await notion.databases.query({
-      database_id: db,
+      database_id: table,
       start_cursor: cursor,
       page_size: 100,
     });
@@ -69,61 +70,51 @@ async function fetchAllProjectsFromDatabase(db) {
 }
 
 // ---------------------------------------------------------
-// CREATE INLINE DATABASE FROM TEMPLATE
+// CREATE INLINE DATABASE FROM TEMPLATE DB
 // ---------------------------------------------------------
-async function createProjectsDbFromTemplate(managerPageId) {
+async function createInlineProjectsDB(managerPageId) {
   console.log("📦 Creating INLINE Projects DB…");
 
-  // 1) Fetch template children
-  const blocks = await notion.blocks.children.list({
+  // 1) Read the template page children
+  const tBlocks = await notion.blocks.children.list({
     block_id: TEMPLATE_PAGE_ID,
     page_size: 100,
   });
 
-  // 2) Find child_database "مشاريعك"
-  const dbBlock = blocks.results.find(
+  const templateDbBlock = tBlocks.results.find(
     (b) => b.type === "child_database" && b.child_database?.title === "مشاريعك"
   );
-  if (!dbBlock) throw new Error("❌ Template missing 'مشاريعك' DB.");
 
-  // 3) Get original schema
+  if (!templateDbBlock) throw new Error("❌ Template missing 'مشاريعك' DB.");
+
+  // 2) Read template DB schema
   const templateDb = await notion.databases.retrieve({
-    database_id: dbBlock.id,
+    database_id: templateDbBlock.id,
   });
 
-  // 4) Create INLINE child_database block
-  const appended = await notion.blocks.children.append({
-    block_id: managerPageId,
-    children: [
-      {
-        type: "child_database",
-        child_database: { title: "مشاريعك" },
-      },
-    ],
-  });
-
-  const newDbId = appended.results[0].id;
-
-  // 5) Apply template schema
-  await notion.databases.update({
-    database_id: newDbId,
+  // 3) Create INLINE DB
+  const newDb = await notion.databases.create({
+    parent: {
+      type: "page_id",
+      page_id: managerPageId,
+    },
     title: [
       {
         type: "text",
         text: { content: "مشاريعك" },
       },
     ],
-    properties: templateDb.properties,
+    properties: templateDb.properties, // full schema copy
   });
 
-  console.log("✅ INLINE DB Created:", newDbId);
-  return newDbId;
+  console.log("✅ INLINE DB CREATED:", newDb.id);
+  return newDb.id;
 }
 
 // ---------------------------------------------------------
-// ENSURE "مشاريعك" DB EXISTS
+// ENSURE INLINE DB EXISTS IN PAGE
 // ---------------------------------------------------------
-async function ensureProjectsDatabase(managerPageId) {
+async function ensureProjectsDB(managerPageId) {
   let cursor;
   while (true) {
     const res = await notion.blocks.children.list({
@@ -132,20 +123,17 @@ async function ensureProjectsDatabase(managerPageId) {
       start_cursor: cursor,
     });
 
-    for (const b of res.results) {
-      if (
-        b.type === "child_database" &&
-        b.child_database?.title === "مشاريعك"
-      ) {
-        return b.id;
+    for (const block of res.results) {
+      if (block.type === "child_database" && block.child_database?.title === "مشاريعك") {
+        return block.id; // found inline db
       }
     }
+
     if (!res.has_more) break;
     cursor = res.next_cursor;
   }
 
-  // If not found → create new inline one
-  return createProjectsDbFromTemplate(managerPageId);
+  return await createInlineProjectsDB(managerPageId);
 }
 
 // ---------------------------------------------------------
@@ -153,14 +141,18 @@ async function ensureProjectsDatabase(managerPageId) {
 // ---------------------------------------------------------
 const managersCache = new Map();
 
-async function getOrCreateManagerTarget(relId, stats) {
-  const original = await notion.pages.retrieve({ page_id: relId });
+async function getOrCreateManager(relPageId, stats) {
+  const original = await notion.pages.retrieve({ page_id: relPageId });
   const managerName = getPageTitle(original);
-  if (!managerName) throw new Error("Missing manager name");
 
-  if (managersCache.has(managerName)) return managersCache.get(managerName);
+  if (!managerName) throw new Error("No manager name");
 
-  // Search for existing manager page
+  // check cache
+  if (managersCache.has(managerName)) {
+    return managersCache.get(managerName);
+  }
+
+  // search in MANAGERS_DB
   const found = await notion.databases.query({
     database_id: MANAGERS_DB,
     filter: {
@@ -182,28 +174,29 @@ async function getOrCreateManagerTarget(relId, stats) {
         },
       },
     });
-    managerPageId = created.id;
+
+    managerPageId = createPageId = created.id;
     stats.newManagerPages++;
   }
 
-  const projectsDbId = await ensureProjectsDatabase(managerPageId);
+  // ensure inline DB exists
+  const projectsDbId = await ensureProjectsDB(managerPageId);
 
-  const cache = { managerPageId, projectsDbId, managerName };
-  managersCache.set(managerName, cache);
-  return cache;
+  const obj = { managerName, managerPageId, projectsDbId };
+  managersCache.set(managerName, obj);
+  return obj;
 }
 
 // ---------------------------------------------------------
-// UPSERT PROJECT INTO MANAGER DB
+// UPSERT PROJECT
 // ---------------------------------------------------------
-async function upsertProjectForManager({
+async function upsertProject({
   managerProjectsDbId,
   projectName,
   projectStatus,
-  remainingAmount,
+  remaining,
   stats,
 }) {
-  // Check if exists
   const existing = await notion.databases.query({
     database_id: managerProjectsDbId,
     filter: {
@@ -213,10 +206,12 @@ async function upsertProjectForManager({
   });
 
   const payload = {
-    "اسم المشروع": { title: [{ text: { content: projectName } }] },
+    "اسم المشروع": {
+      title: [{ text: { content: projectName } }],
+    },
   };
 
-  // Fetch schema
+  // check schema before adding
   const schema = await notion.databases.retrieve({
     database_id: managerProjectsDbId,
   });
@@ -225,8 +220,8 @@ async function upsertProjectForManager({
     payload["حالة المشروع"] = { select: { name: projectStatus } };
   }
 
-  if (schema.properties["المبلغ المتبقي"] && remainingAmount !== null) {
-    payload["المبلغ المتبقي"] = { number: remainingAmount };
+  if (schema.properties["المبلغ المتبقي"] && remaining !== null) {
+    payload["المبلغ المتبقي"] = { number: remaining };
   }
 
   if (existing.results.length) {
@@ -247,32 +242,29 @@ async function upsertProjectForManager({
 // ---------------------------------------------------------
 // PROCESS PROJECT
 // ---------------------------------------------------------
-async function processProjectPage(project, stats) {
-  stats.totalProjectsProcessed++;
+async function processProject(project, stats) {
+  stats.totalProjects++;
 
-  const projectName = getTitle(project, "اسم المشروع");
-  const projectStatus = getSelect(project, "حالة المشروع");
-  const remainingAmount = getNumber(project, "المبلغ المتبقي");
-  const managers = getRelations(project, "مدير المشروع");
+  const name = getTitle(project, "اسم المشروع");
+  const status = getSelect(project, "حالة المشروع");
+  const remaining = getNumber(project, "المبلغ المتبقي");
+  const relManagers = getRelations(project, "مدير المشروع");
 
-  if (!projectName || managers.length === 0) return;
+  if (!name || !relManagers.length) return;
 
-  for (const managerId of managers) {
+  for (const m of relManagers) {
     try {
-      const { projectsDbId } = await getOrCreateManagerTarget(
-        managerId,
-        stats
-      );
+      const { projectsDbId } = await getOrCreateManager(m, stats);
 
-      await upsertProjectForManager({
+      await upsertProject({
         managerProjectsDbId: projectsDbId,
-        projectName,
-        projectStatus,
-        remainingAmount,
+        projectName: name,
+        projectStatus: status,
+        remaining,
         stats,
       });
-    } catch (e) {
-      console.error("Manager error:", e.message);
+    } catch (err) {
+      console.error("Manager error:", err.message);
     }
   }
 }
@@ -282,19 +274,19 @@ async function processProjectPage(project, stats) {
 // ---------------------------------------------------------
 async function main() {
   const stats = {
-    totalProjectsProcessed: 0,
+    totalProjects: 0,
     projectsInserted: 0,
     projectsUpdated: 0,
     newManagerPages: 0,
   };
 
-  const projects = await fetchAllProjectsFromDatabase(PROJECTS_DB);
+  const projects = await fetchAllProjects(PROJECTS_DB);
 
   for (const project of projects) {
     try {
-      await processProjectPage(project, stats);
-    } catch (e) {
-      console.error("Project error:", e.message);
+      await processProject(project, stats);
+    } catch (err) {
+      console.error("Project error:", err.message);
     }
   }
 
