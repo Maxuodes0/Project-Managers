@@ -26,8 +26,8 @@ jobs:
       - name: Run Notion schema logger
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          PROJECTS_DB_ID: ${{ secrets.PROJECTS_DB_ID }}
-          MANAGERS_DB_ID: ${{ secrets.MANAGERS_DB_ID }}
+          PROJECTS_DB_ID: ${{ secrets.PROJECTS_DB }}
+          MANAGERS_DB_ID: ${{ secrets.MANAGERS_DB }}
           TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
 
         run: python src/index.py
