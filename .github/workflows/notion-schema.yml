@@ -1,9 +1,9 @@
 name: Notion Schema Inspector (Python)
 
 on:
-  workflow_dispatch:      # تشغيل يدوي من تبويب Actions
+  workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"    # تشغيل كل 5 دقائق (توقيت UTC)
+    - cron: "*/5 * * * *"
 
 jobs:
   run-schema-inspector:
@@ -26,8 +26,8 @@ jobs:
       - name: Run Notion schema logger
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          PROJECTS_DB_ID: ${{ secrets.PROJECTS_DB }}
-          MANAGERS_DB_ID: ${{ secrets.MANAGERS_DB }}
+          PROJECTS_DB: ${{ secrets.PROJECTS_DB }}        # ✔ مطابق للسكربت
+          MANAGERS_DB: ${{ secrets.MANAGERS_DB }}        # ✔ مطابق للسكربت
           TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
 
         run: python src/index.py
