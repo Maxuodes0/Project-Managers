@@ -117,7 +117,7 @@ async function fetchAllProjects(db) {
 }
 
 // ---------------------------------------------------------
-// CREATE INLINE PROJECT DB (محدثة لعرض Gallery View)
+// CREATE INLINE PROJECT DB (معرض Gallery View)
 // ---------------------------------------------------------
 async function createInlineProjectsDB(managerPageId) {
   console.log("📦 Creating INLINE Projects DB with GALLERY View…");
@@ -150,15 +150,14 @@ async function createInlineProjectsDB(managerPageId) {
     ],
     properties: cleanProps,
     is_inline: true,
-    // 👈 التعديل لجعل العرض الافتراضي Gallery View
+    // 👈 إعدادات عرض المعرض (Gallery View)
     layout: {
         type: "gallery",
         gallery: {
-            // يمكن استخدام "page_cover" لعرض غلاف الصفحة كصورة للبطاقة
             cover: {
                 type: "page_cover",
             },
-            card_size: "medium" // يمكن تغيير الحجم إلى "small" أو "large"
+            card_size: "medium"
         }
     },
     // ------------------------------------------------
@@ -170,11 +169,13 @@ async function createInlineProjectsDB(managerPageId) {
 }
 
 // ---------------------------------------------------------
-// ENSURE INLINE DB EXISTS
+// ENSURE INLINE DB EXISTS (محدثة: تحذف القديم وتنشئ الجديد)
 // ---------------------------------------------------------
 async function ensureProjectsDB(managerPageId) {
   let cursor;
+  let existingDbId = null;
 
+  // 1. البحث عن قاعدة البيانات الموجودة
   while (true) {
     const r = await notion.blocks.children.list({
       block_id: managerPageId,
@@ -184,15 +185,24 @@ async function ensureProjectsDB(managerPageId) {
 
     for (const b of r.results) {
       if (b.type === "child_database" && b.child_database?.title === "مشاريعك") {
-        return b.id;
+        existingDbId = b.id;
+        break;
       }
     }
 
-    if (!r.has_more) break;
+    if (existingDbId || !r.has_more) break;
     cursor = r.next_cursor;
   }
 
-  // إذا لم يتم العثور عليها، قم بإنشائها بالتنسيق الجديد (Gallery View)
+  // 2. إذا وجدت، قم بحذفها لتمكين إنشاء النسخة الجديدة بالـ Gallery View
+  if (existingDbId) {
+      console.log(`⚠️ Found old inline DB: ${existingDbId}. Deleting to apply new Gallery View...`);
+      // استخدام blocks.delete لحذف الكتلة (قاعدة البيانات المضمنة)
+      await notion.blocks.delete({ block_id: existingDbId });
+      console.log(`✅ Deleted old inline DB: ${existingDbId}.`);
+  }
+
+  // 3. إنشاء نسخة جديدة (بما أنها محذوفة أو لم تكن موجودة أساساً)
   return await createInlineProjectsDB(managerPageId);
 }
 
@@ -222,12 +232,9 @@ async function getOrCreateManager(relId, stats) {
   let imageProps = {};
   if (hrFound.results.length) {
       const hrPage = hrFound.results[0];
-      // يجب أن يتطابق اسم الخاصية مع اسم الحقل في HR_DB
       const notionFileObject = getNotionFileObject(hrPage, "الصورة الشخصية للموظف"); 
 
       if (notionFileObject) {
-          // يتم بناء خاصية الملفات لإضافتها إلى صفحة المدير في MANAGERS_DB
-          // يجب أن يتطابق اسم الخاصية مع اسم الحقل في MANAGERS_DB
           imageProps["الصورة الشخصية للموظف"] = { 
               files: [notionFileObject]
           };
@@ -271,6 +278,7 @@ async function getOrCreateManager(relId, stats) {
     stats.newManagerPages++;
   }
 
+  // سيقوم هذا الآن بحذف القديم وإنشاء الجديد بعرض المعرض
   const projectsDbId = await ensureProjectsDB(managerPageId);
 
   const obj = { managerPageId, managerName, projectsDbId };
