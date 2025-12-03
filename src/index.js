@@ -122,7 +122,6 @@ async function fetchAllProjects(db) {
 async function createInlineProjectsDB(managerPageId) {
   console.log("📦 Creating INLINE Projects DB with GALLERY View…");
 
-  // get template children
   const blocks = await notion.blocks.children.list({
     block_id: TEMPLATE_PAGE_ID,
     page_size: 100,
@@ -170,6 +169,8 @@ async function createInlineProjectsDB(managerPageId) {
 
 // ---------------------------------------------------------
 // ENSURE INLINE DB EXISTS (محدثة: تحذف القديم وتنشئ الجديد)
+// 
+// **ملاحظة:** هذا المنطق مؤقت. يجب إزالته بعد نجاح تطبيق Gallery View على جميع المديرين.
 // ---------------------------------------------------------
 async function ensureProjectsDB(managerPageId) {
   let cursor;
@@ -217,9 +218,18 @@ async function getOrCreateManager(relId, stats) {
 
   if (!managerName) throw new Error("No manager name");
 
-  if (managersCache.has(managerName)) return managersCache.get(managerName);
+  // إذا كان المدير في الكاش، قم بالعودة فوراً
+  if (managersCache.has(managerName)) {
+     const cachedData = managersCache.get(managerName);
+     
+     // 🛑 يجب عليك إعادة تشغيل ensureProjectsDB لجميع المديرين للتأكد من تطبيق العرض
+     // لإجبار التطبيق، سنقوم بإعادة بناء projectsDbId وتحديث الكاش
+     const projectsDbId = await ensureProjectsDB(cachedData.managerPageId);
+     cachedData.projectsDbId = projectsDbId;
+     return cachedData;
+  }
 
-  // 1. جلب الصورة من قاعدة بيانات الموارد البشرية (HR_DB)
+  // 1. جلب بيانات المدير (أو إنشاؤها)
   const hrFound = await notion.databases.query({
       database_id: HR_DB,
       filter: {
@@ -254,7 +264,6 @@ async function getOrCreateManager(relId, stats) {
   if (found.results.length) {
     managerPageId = found.results[0].id;
     
-    // 2. تحديث الصفحة الموجودة بالصورة (إذا كانت متوفرة)
     if (Object.keys(imageProps).length > 0) {
         await notion.pages.update({
             page_id: managerPageId,
@@ -269,7 +278,6 @@ async function getOrCreateManager(relId, stats) {
         "اسم مدير المشروع": {
           title: [{ text: { content: managerName } }],
         },
-        // 3. إضافة خاصية الصورة عند الإنشاء
         ...imageProps 
       },
     });
@@ -278,7 +286,7 @@ async function getOrCreateManager(relId, stats) {
     stats.newManagerPages++;
   }
 
-  // سيقوم هذا الآن بحذف القديم وإنشاء الجديد بعرض المعرض
+  // إنشاء قاعدة البيانات المضمنة (حذف القديم إذا وجد)
   const projectsDbId = await ensureProjectsDB(managerPageId);
 
   const obj = { managerPageId, managerName, projectsDbId };
