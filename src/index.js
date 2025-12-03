@@ -158,7 +158,7 @@ async function createInlineProjectsDB(managerPageId) {
             cover: {
                 type: "page_cover",
             },
-            card_size: "medium" // أو "small" أو "large"
+            card_size: "medium" // يمكن تغيير الحجم إلى "small" أو "large"
         }
     },
     // ------------------------------------------------
@@ -192,6 +192,7 @@ async function ensureProjectsDB(managerPageId) {
     cursor = r.next_cursor;
   }
 
+  // إذا لم يتم العثور عليها، قم بإنشائها بالتنسيق الجديد (Gallery View)
   return await createInlineProjectsDB(managerPageId);
 }
 
