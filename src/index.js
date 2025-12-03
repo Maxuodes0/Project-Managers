@@ -10,7 +10,7 @@ dotenv.config();
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const PROJECTS_DB = process.env.PROJECTS_DB;
 const MANAGERS_DB = process.env.MANAGERS_DB;
-const HR_DB = process.env.HR_DB; // قاعدة بيانات الموارد البشرية
+const HR_DB = process.env.HR_DB;
 const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID;
 
 function validateEnv() {
@@ -117,10 +117,10 @@ async function fetchAllProjects(db) {
 }
 
 // ---------------------------------------------------------
-// CREATE INLINE PROJECT DB
+// CREATE INLINE PROJECT DB (محدثة لعرض Gallery View)
 // ---------------------------------------------------------
 async function createInlineProjectsDB(managerPageId) {
-  console.log("📦 Creating INLINE Projects DB…");
+  console.log("📦 Creating INLINE Projects DB with GALLERY View…");
 
   // get template children
   const blocks = await notion.blocks.children.list({
@@ -149,8 +149,19 @@ async function createInlineProjectsDB(managerPageId) {
       },
     ],
     properties: cleanProps,
-    // لجعلها قاعدة بيانات مضمنة
     is_inline: true,
+    // 👈 التعديل لجعل العرض الافتراضي Gallery View
+    layout: {
+        type: "gallery",
+        gallery: {
+            // يمكن استخدام "page_cover" لعرض غلاف الصفحة كصورة للبطاقة
+            cover: {
+                type: "page_cover",
+            },
+            card_size: "medium" // أو "small" أو "large"
+        }
+    },
+    // ------------------------------------------------
   });
 
   console.log("✅ INLINE DB CREATED:", newDb.id);
@@ -210,11 +221,13 @@ async function getOrCreateManager(relId, stats) {
   let imageProps = {};
   if (hrFound.results.length) {
       const hrPage = hrFound.results[0];
-      const notionFileObject = getNotionFileObject(hrPage, "الصورة الشخصية"); 
+      // يجب أن يتطابق اسم الخاصية مع اسم الحقل في HR_DB
+      const notionFileObject = getNotionFileObject(hrPage, "الصورة الشخصية للموظف"); 
 
       if (notionFileObject) {
           // يتم بناء خاصية الملفات لإضافتها إلى صفحة المدير في MANAGERS_DB
-          imageProps["الصورة الشخصية"] = {
+          // يجب أن يتطابق اسم الخاصية مع اسم الحقل في MANAGERS_DB
+          imageProps["الصورة الشخصية للموظف"] = { 
               files: [notionFileObject]
           };
       }
