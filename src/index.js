@@ -149,7 +149,6 @@ async function createInlineProjectsDB(managerPageId) {
     ],
     properties: cleanProps,
     is_inline: true,
-    // 👈 إعدادات عرض المعرض (Gallery View)
     layout: {
         type: "gallery",
         gallery: {
@@ -159,7 +158,6 @@ async function createInlineProjectsDB(managerPageId) {
             card_size: "medium"
         }
     },
-    // ------------------------------------------------
   });
 
   console.log("✅ INLINE DB CREATED:", newDb.id);
@@ -168,15 +166,13 @@ async function createInlineProjectsDB(managerPageId) {
 }
 
 // ---------------------------------------------------------
-// ENSURE INLINE DB EXISTS (محدثة: تحذف القديم وتنشئ الجديد)
-// 
-// **ملاحظة:** هذا المنطق مؤقت. يجب إزالته بعد نجاح تطبيق Gallery View على جميع المديرين.
+// ENSURE INLINE DB EXISTS (مصححة: تعود للبحث فقط)
 // ---------------------------------------------------------
 async function ensureProjectsDB(managerPageId) {
-  let cursor;
-  let existingDbId = null;
+  console.log("🔍 Checking inline DB for manager:", managerPageId);
 
-  // 1. البحث عن قاعدة البيانات الموجودة
+  let cursor;
+
   while (true) {
     const r = await notion.blocks.children.list({
       block_id: managerPageId,
@@ -186,24 +182,16 @@ async function ensureProjectsDB(managerPageId) {
 
     for (const b of r.results) {
       if (b.type === "child_database" && b.child_database?.title === "مشاريعك") {
-        existingDbId = b.id;
-        break;
+        console.log("✅ Found existing inline Projects DB:", b.id);
+        return b.id; // تم العثور عليها، عد بمعرّفها
       }
     }
 
-    if (existingDbId || !r.has_more) break;
+    if (!r.has_more) break;
     cursor = r.next_cursor;
   }
 
-  // 2. إذا وجدت، قم بحذفها لتمكين إنشاء النسخة الجديدة بالـ Gallery View
-  if (existingDbId) {
-      console.log(`⚠️ Found old inline DB: ${existingDbId}. Deleting to apply new Gallery View...`);
-      // استخدام blocks.delete لحذف الكتلة (قاعدة البيانات المضمنة)
-      await notion.blocks.delete({ block_id: existingDbId });
-      console.log(`✅ Deleted old inline DB: ${existingDbId}.`);
-  }
-
-  // 3. إنشاء نسخة جديدة (بما أنها محذوفة أو لم تكن موجودة أساساً)
+  // إذا لم يتم العثور عليها، قم بإنشائها
   return await createInlineProjectsDB(managerPageId);
 }
 
@@ -218,14 +206,9 @@ async function getOrCreateManager(relId, stats) {
 
   if (!managerName) throw new Error("No manager name");
 
-  // إذا كان المدير في الكاش، قم بالعودة فوراً
   if (managersCache.has(managerName)) {
      const cachedData = managersCache.get(managerName);
-     
-     // 🛑 يجب عليك إعادة تشغيل ensureProjectsDB لجميع المديرين للتأكد من تطبيق العرض
-     // لإجبار التطبيق، سنقوم بإعادة بناء projectsDbId وتحديث الكاش
-     const projectsDbId = await ensureProjectsDB(cachedData.managerPageId);
-     cachedData.projectsDbId = projectsDbId;
+     // عند استخدام الكاش، لا حاجة لإعادة تشغيل ensureProjectsDB
      return cachedData;
   }
 
@@ -286,7 +269,7 @@ async function getOrCreateManager(relId, stats) {
     stats.newManagerPages++;
   }
 
-  // إنشاء قاعدة البيانات المضمنة (حذف القديم إذا وجد)
+  // البحث أو الإنشاء (الآن لا يوجد حذف)
   const projectsDbId = await ensureProjectsDB(managerPageId);
 
   const obj = { managerPageId, managerName, projectsDbId };
@@ -305,6 +288,8 @@ async function upsertProject({
   remaining,
   stats,
 }) {
+  console.log(`🔄 UPSERT project "${projectName}" into DB ${managerProjectsDbId}`);
+  
   const existing = await notion.databases.query({
     database_id: managerProjectsDbId,
     filter: {
@@ -332,12 +317,14 @@ async function upsertProject({
   }
 
   if (existing.results.length) {
+    console.log("✏️ Updating existing project...");
     await notion.pages.update({
       page_id: existing.results[0].id,
       properties: props,
     });
     stats.projectsUpdated++;
   } else {
+    console.log("➕ Inserting new project...");
     await notion.pages.create({
       parent: { database_id: managerProjectsDbId },
       properties: props,
@@ -358,6 +345,8 @@ async function processProject(page, stats) {
   const status = getSelect(page, "حالة المشروع");
   const remaining = getFormulaNumber(page, "المبلغ المتبقي");
   const managers = getRelations(page, "مدير المشروع");
+
+  console.log(`\n📂 Project: ${name}`);
 
   if (!managers.length) return;
 
@@ -388,6 +377,8 @@ async function main() {
     projectsUpdated: 0,
     newManagerPages: 0,
   };
+  
+  console.log("--- STARTING SYNC ---");
 
   const projects = await fetchAllProjects(PROJECTS_DB);
 
@@ -399,7 +390,7 @@ async function main() {
     }
   }
 
-  console.log("=== STATS ===");
+  console.log("\n=== STATS ===");
   console.log(stats);
 }
 
