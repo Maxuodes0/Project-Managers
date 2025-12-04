@@ -3,6 +3,7 @@ name: Notion Sync
 on:
   workflow_dispatch:
   schedule:
+    # سيتم تشغيله كل 5 دقائق
     - cron: "*/5 * * * *"
 
 jobs:
@@ -22,7 +23,8 @@ jobs:
         run: |
           npm install
 
-      - name: Run Notion Sync Script
+      - name: Run Notion Sync Script (index.js)
+        # تشغيل ملف المزامنة الأساسي
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
@@ -30,3 +32,11 @@ jobs:
           TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
           HR_DB: ${{ secrets.HR_DB }}
         run: node src/index.js
+      
+      - name: Run Gallery View Fix (set_gallery_view.js)
+        # تشغيل ملف تصحيح العرض (View Fix) بعد انتهاء المزامنة
+        # يستخدم نفس المتغيرات البيئية
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
+        run: node src/set_gallery_view.js
