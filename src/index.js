@@ -11,10 +11,9 @@ const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const PROJECTS_DB = process.env.PROJECTS_DB;
 const MANAGERS_DB = process.env.MANAGERS_DB;
 const HR_DB = process.env.HR_DB;
-const TEMPLATE_PAGE_ID = process.env.TEMPLATE_PAGE_ID;
 
 function validateEnv() {
-  const req = { NOTION_TOKEN, PROJECTS_DB, MANAGERS_DB, HR_DB, TEMPLATE_PAGE_ID };
+  const req = { NOTION_TOKEN, PROJECTS_DB, MANAGERS_DB, HR_DB };
   const missing = Object.entries(req)
     .filter(([, v]) => !v)
     .map(([k]) => k);
@@ -33,64 +32,24 @@ const notion = new Client({ auth: NOTION_TOKEN });
 function getTitle(page, prop) {
   return page.properties[prop]?.title?.map(t => t.plain_text).join("") || null;
 }
+
 function getSelect(page, prop) {
   return page.properties[prop]?.select?.name || null;
 }
+
 function getFormulaNumber(page, prop) {
   return page.properties[prop]?.formula?.number ?? null;
 }
+
 function getRelations(page, prop) {
   return page.properties[prop]?.relation?.map(r => r.id) || [];
 }
+
 function getPageTitle(pg) {
   const key = Object.keys(pg.properties).find(
     k => pg.properties[k].type === "title"
   );
   return pg.properties[key]?.title?.map(t => t.plain_text).join("") || null;
-}
-
-// دالة لجلب كائن الملف (لصورة الموظف)
-function getNotionFileObject(page, prop) {
-  const files = page.properties[prop]?.files;
-  if (!files || files.length === 0) return null;
-
-  const file = files[0];
-  
-  if (file.type === "file") {
-      // ملف مستضاف على Notion
-      return {
-          name: file.name,
-          type: "file",
-          file: {
-              url: file.file.url,
-              expiry_time: file.file.expiry_time
-          }
-      };
-  } else if (file.type === "external") {
-      // رابط خارجي
-      return {
-          name: file.name,
-          type: "external",
-          external: {
-              url: file.external.url
-          }
-      };
-  }
-  return null;
-}
-
-
-// ---------------------------------------------------------
-// CLEAN PROPERTIES (remove formula + rollup)
-// ---------------------------------------------------------
-function cleanProperties(props) {
-  const clean = {};
-  for (const [key, val] of Object.entries(props)) {
-    if (val.type === "formula") continue;
-    if (val.type === "rollup") continue;
-    clean[key] = val;
-  }
-  return clean;
 }
 
 // ---------------------------------------------------------
@@ -117,60 +76,45 @@ async function fetchAllProjects(db) {
 }
 
 // ---------------------------------------------------------
-// CREATE INLINE PROJECT DB (معرض Gallery View)
+// CREATE INLINE PROJECTS DB (CUSTOM SCHEMA)
 // ---------------------------------------------------------
 async function createInlineProjectsDB(managerPageId) {
-  console.log("📦 Creating INLINE Projects DB with GALLERY View…");
+  console.log("📦 Creating INLINE Projects DB…");
 
-  const blocks = await notion.blocks.children.list({
-    block_id: TEMPLATE_PAGE_ID,
-    page_size: 100,
-  });
-
-  const templateBlock = blocks.results.find(
-    b => b.type === "child_database" && b.child_database?.title === "مشاريعك"
-  );
-
-  if (!templateBlock) throw new Error("❌ Template missing مشاريعك DB");
-
-  const templateDB = await notion.databases.retrieve({
-    database_id: templateBlock.id,
-  });
-
-  const cleanProps = cleanProperties(templateDB.properties);
-
-  const newDb = await notion.databases.create({
+  const db = await notion.databases.create({
     parent: { type: "page_id", page_id: managerPageId },
-    title: [
-      {
-        type: "text",
-        text: { content: "مشاريعك" },
-      },
-    ],
-    properties: cleanProps,
+    title: [{ type: "text", text: { content: "مشاريعك" } }],
     is_inline: true,
-    layout: {
-        type: "gallery",
-        gallery: {
-            cover: {
-                type: "page_cover",
-            },
-            card_size: "medium"
-        }
+    properties: {
+      "اسم المشروع": {
+        title: {},
+      },
+      "حالة المشروع": {
+        select: {
+          options: [
+            { name: "جاري التنفيذ", color: "blue" },
+            { name: "مكتمل", color: "green" },
+            { name: "متاخر", color: "red" },
+            { name: "طلب تعديل", color: "yellow" },
+          ],
+        },
+      },
+      "المبلغ المتبقي": {
+        number: {
+          format: "number",
+        },
+      },
     },
   });
 
-  console.log("✅ INLINE DB CREATED:", newDb.id);
-
-  return newDb.id;
+  console.log("✅ INLINE DB CREATED:", db.id);
+  return db.id;
 }
 
 // ---------------------------------------------------------
-// ENSURE INLINE DB EXISTS (مصححة: تعود للبحث فقط)
+// ENSURE INLINE DB EXISTS
 // ---------------------------------------------------------
 async function ensureProjectsDB(managerPageId) {
-  console.log("🔍 Checking inline DB for manager:", managerPageId);
-
   let cursor;
 
   while (true) {
@@ -182,8 +126,7 @@ async function ensureProjectsDB(managerPageId) {
 
     for (const b of r.results) {
       if (b.type === "child_database" && b.child_database?.title === "مشاريعك") {
-        console.log("✅ Found existing inline Projects DB:", b.id);
-        return b.id; // تم العثور عليها، عد بمعرّفها
+        return b.id;
       }
     }
 
@@ -191,7 +134,6 @@ async function ensureProjectsDB(managerPageId) {
     cursor = r.next_cursor;
   }
 
-  // إذا لم يتم العثور عليها، قم بإنشائها
   return await createInlineProjectsDB(managerPageId);
 }
 
@@ -204,34 +146,10 @@ async function getOrCreateManager(relId, stats) {
   const original = await notion.pages.retrieve({ page_id: relId });
   const managerName = getPageTitle(original);
 
-  if (!managerName) throw new Error("No manager name");
+  if (!managerName) throw new Error("Manager name missing");
 
   if (managersCache.has(managerName)) {
-     const cachedData = managersCache.get(managerName);
-     // عند استخدام الكاش، لا حاجة لإعادة تشغيل ensureProjectsDB
-     return cachedData;
-  }
-
-  // 1. جلب بيانات المدير (أو إنشاؤها)
-  const hrFound = await notion.databases.query({
-      database_id: HR_DB,
-      filter: {
-          property: "اسم الموظف", 
-          title: { equals: managerName },
-      },
-      page_size: 1,
-  });
-
-  let imageProps = {};
-  if (hrFound.results.length) {
-      const hrPage = hrFound.results[0];
-      const notionFileObject = getNotionFileObject(hrPage, "الصورة الشخصية للموظف"); 
-
-      if (notionFileObject) {
-          imageProps["الصورة الشخصية للموظف"] = { 
-              files: [notionFileObject]
-          };
-      }
+    return managersCache.get(managerName);
   }
 
   const found = await notion.databases.query({
@@ -246,14 +164,6 @@ async function getOrCreateManager(relId, stats) {
 
   if (found.results.length) {
     managerPageId = found.results[0].id;
-    
-    if (Object.keys(imageProps).length > 0) {
-        await notion.pages.update({
-            page_id: managerPageId,
-            properties: imageProps,
-        });
-    }
-
   } else {
     const created = await notion.pages.create({
       parent: { database_id: MANAGERS_DB },
@@ -261,7 +171,6 @@ async function getOrCreateManager(relId, stats) {
         "اسم مدير المشروع": {
           title: [{ text: { content: managerName } }],
         },
-        ...imageProps 
       },
     });
 
@@ -269,17 +178,15 @@ async function getOrCreateManager(relId, stats) {
     stats.newManagerPages++;
   }
 
-  // البحث أو الإنشاء (الآن لا يوجد حذف)
   const projectsDbId = await ensureProjectsDB(managerPageId);
 
-  const obj = { managerPageId, managerName, projectsDbId };
+  const obj = { managerPageId, projectsDbId };
   managersCache.set(managerName, obj);
-
   return obj;
 }
 
 // ---------------------------------------------------------
-// UPSERT PROJECT 
+// UPSERT PROJECT
 // ---------------------------------------------------------
 async function upsertProject({
   managerProjectsDbId,
@@ -288,8 +195,6 @@ async function upsertProject({
   remaining,
   stats,
 }) {
-  console.log(`🔄 UPSERT project "${projectName}" into DB ${managerProjectsDbId}`);
-  
   const existing = await notion.databases.query({
     database_id: managerProjectsDbId,
     filter: {
@@ -304,27 +209,21 @@ async function upsertProject({
     },
   };
 
-  const schema = await notion.databases.retrieve({
-    database_id: managerProjectsDbId,
-  });
-
-  if (schema.properties["حالة المشروع"] && projectStatus) {
+  if (projectStatus) {
     props["حالة المشروع"] = { select: { name: projectStatus } };
   }
 
-  if (schema.properties["المبلغ المتبقي"] && remaining !== null) {
+  if (remaining !== null) {
     props["المبلغ المتبقي"] = { number: remaining };
   }
 
   if (existing.results.length) {
-    console.log("✏️ Updating existing project...");
     await notion.pages.update({
       page_id: existing.results[0].id,
       properties: props,
     });
     stats.projectsUpdated++;
   } else {
-    console.log("➕ Inserting new project...");
     await notion.pages.create({
       parent: { database_id: managerProjectsDbId },
       properties: props,
@@ -334,7 +233,7 @@ async function upsertProject({
 }
 
 // ---------------------------------------------------------
-// PROCESS PROJECT 
+// PROCESS PROJECT
 // ---------------------------------------------------------
 async function processProject(page, stats) {
   stats.total++;
@@ -345,8 +244,6 @@ async function processProject(page, stats) {
   const status = getSelect(page, "حالة المشروع");
   const remaining = getFormulaNumber(page, "المبلغ المتبقي");
   const managers = getRelations(page, "مدير المشروع");
-
-  console.log(`\n📂 Project: ${name}`);
 
   if (!managers.length) return;
 
@@ -377,8 +274,8 @@ async function main() {
     projectsUpdated: 0,
     newManagerPages: 0,
   };
-  
-  console.log("--- STARTING SYNC ---");
+
+  console.log("🚀 STARTING NOTION SYNC");
 
   const projects = await fetchAllProjects(PROJECTS_DB);
 
@@ -390,7 +287,7 @@ async function main() {
     }
   }
 
-  console.log("\n=== STATS ===");
+  console.log("✅ DONE");
   console.log(stats);
 }
 
