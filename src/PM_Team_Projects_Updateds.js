@@ -194,7 +194,7 @@ async function main() {
       // 1️⃣ Ensure child DBs (always safe)
       await ensureChildDatabase(
         project.id,
-        "فريق الفرعي لانس",
+        "فريق الفري لانس",
         FREELANCE_SCHEMA
       );
 
