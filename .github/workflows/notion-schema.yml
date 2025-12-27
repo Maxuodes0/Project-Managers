@@ -21,11 +21,23 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Run Notion Sync Script
+      # -------------------------------------------------
+      # 1️⃣ PM Team & Projects (Initial Sync)
+      # -------------------------------------------------
+      - name: Run PM Team And Projects
+        run: node src/PM_Team_And_Projects.js
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
           MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
-          TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
           HR_DB: ${{ secrets.HR_DB }}
-        run: node src/index.js
+
+      # -------------------------------------------------
+      # 2️⃣ PM Team Projects Updates (Reverse Sync + DBs)
+      # -------------------------------------------------
+      - name: Run PM Team Projects Updateds
+        run: node src/PM_Team_Projects_Updateds.js
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
+          MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
