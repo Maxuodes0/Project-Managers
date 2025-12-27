@@ -9,6 +9,11 @@ jobs:
   run-sync:
     runs-on: ubuntu-latest
 
+    # منع تداخل التشغيلات
+    concurrency:
+      group: notion-sync
+      cancel-in-progress: true
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -22,7 +27,7 @@ jobs:
         run: npm install
 
       # -------------------------------------------------
-      # 1️⃣ PM Team & Projects (Initial Sync)
+      # 1️⃣ PM Team & Projects (Seed / Initial Sync)
       # -------------------------------------------------
       - name: Run PM Team And Projects
         run: node src/PM_Team_And_Projects.js
@@ -33,10 +38,22 @@ jobs:
           HR_DB: ${{ secrets.HR_DB }}
 
       # -------------------------------------------------
-      # 2️⃣ PM Team Projects Updates (Reverse Sync + DBs)
+      # 2️⃣ PM Team Projects Updates
+      #    (مشاريعك ➜ PROJECTS_DB)
       # -------------------------------------------------
       - name: Run PM Team Projects Updateds
         run: node src/PM_Team_Projects_Updateds.js
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
+          MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
+
+      # -------------------------------------------------
+      # 3️⃣ PM Team Projects Reconcile
+      #    (PROJECTS_DB ➜ مشاريعك عند التعارض)
+      # -------------------------------------------------
+      - name: Run PM Team Projects Reconcile
+        run: node src/PM_Team_Projects_Reconcile.js
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
