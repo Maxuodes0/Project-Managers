@@ -1,4 +1,3 @@
-// src/index.js
 import dotenv from "dotenv";
 import { Client } from "@notionhq/client";
 
@@ -186,7 +185,7 @@ async function getOrCreateManager(relId, stats) {
 }
 
 // ---------------------------------------------------------
-// UPSERT PROJECT
+// UPSERT PROJECT (IMPORTANT FIX HERE)
 // ---------------------------------------------------------
 async function upsertProject({
   managerProjectsDbId,
@@ -209,10 +208,12 @@ async function upsertProject({
     },
   };
 
-  if (projectStatus) {
+  // ✅ الحالة تُنسخ مرة واحدة فقط (عند الإنشاء)
+  if (!existing.results.length && projectStatus) {
     props["حالة المشروع"] = { select: { name: projectStatus } };
   }
 
+  // المبلغ المتبقي يتحدث دائمًا
   if (remaining !== null) {
     props["المبلغ المتبقي"] = { number: remaining };
   }
@@ -275,7 +276,7 @@ async function main() {
     newManagerPages: 0,
   };
 
-  console.log("🚀 STARTING NOTION SYNC");
+  console.log("🚀 STARTING PM_Team_And_Projects");
 
   const projects = await fetchAllProjects(PROJECTS_DB);
 
