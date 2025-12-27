@@ -77,8 +77,8 @@ async function ensureChildDatabase(pageId, title, properties) {
 // SCHEMAS
 // ---------------------------------------------------------
 const FREELANCE_SCHEMA = {
-  "نوع الصرف": { title: {} },
-  "اسم الشخص": { rich_text: {} },
+  "اسم الشخص": { title: {} },
+  "نوع الصرف": { rich_text: {} },
   "العمل": { rich_text: {} },
   "المبلغ": { number: { format: "number" } },
   "آيبان": { rich_text: {} },
@@ -98,8 +98,11 @@ const PURCHASES_SCHEMA = {
   "نوع المصروف": { title: {} },
   "تاريخ": { date: {} },
   "المبلغ": { number: { format: "number" } },
-  "المبلغ بدون ضريبة": { number: { format: "number" } },
-  "إرفاق الفاتورة": { files: {} },
+"المبلغ بدون ضريبة": {
+    formula: {
+      expression: "round(prop(\"المبلغ\") / 1.15, 2)"
+    }
+  },  "إرفاق الفاتورة": { files: {} },
   "دافع المبلغ": {
     select: {
       options: [
