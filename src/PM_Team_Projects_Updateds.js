@@ -31,6 +31,7 @@ async function listAllPages(databaseId) {
       start_cursor: cursor,
       page_size: 100,
     });
+
     results.push(...res.results);
     if (!res.has_more) break;
     cursor = res.next_cursor;
@@ -40,7 +41,9 @@ async function listAllPages(databaseId) {
 }
 
 function getTitle(page, prop) {
-  return page.properties[prop]?.title?.map(t => t.plain_text).join("") || null;
+  return page.properties[prop]?.title
+    ?.map(t => t.plain_text)
+    .join("") || null;
 }
 
 function getSelect(page, prop) {
@@ -97,13 +100,15 @@ const FREELANCE_SCHEMA = {
 const PURCHASES_SCHEMA = {
   "نوع المصروف": { title: {} },
   "تاريخ": { date: {} },
+
+  // 👈 المستخدم يدخل المبلغ شامل الضريبة
   "المبلغ": { number: { format: "number" } },
-  "المبلغ بدون ضريبة": {
-  formula: {
-    expression: "prop(\"المبلغ\") / 1.15"
-  }
-}
-  },  "إرفاق الفاتورة": { files: {} },
+
+  // 👈 نخزنه كرقم فقط (الحساب يتم في سكربت التكاليف)
+  "المبلغ بدون ضريبة": { number: { format: "number" } },
+
+  "إرفاق الفاتورة": { files: {} },
+
   "دافع المبلغ": {
     select: {
       options: [
@@ -154,7 +159,7 @@ async function updateMainProjectStatus(projectPage) {
     },
   });
 
-  // توقيع التعديل كنظام في مشاريعك
+  // توقيع التعديل كنظام
   await notion.pages.update({
     page_id: projectPage.id,
     properties: {
@@ -170,7 +175,7 @@ async function updateMainProjectStatus(projectPage) {
 }
 
 // ---------------------------------------------------------
-// MAIN LOGIC
+// MAIN
 // ---------------------------------------------------------
 async function main() {
   console.log("🚀 Starting PM_Team_Projects_Updateds");
@@ -180,7 +185,6 @@ async function main() {
   for (const manager of managers) {
     const managerPageId = manager.id;
 
-    // Find "مشاريعك" DB
     const blocks = await notion.blocks.children.list({
       block_id: managerPageId,
       page_size: 100,
@@ -195,7 +199,6 @@ async function main() {
     const projects = await listAllPages(projectsDbBlock.id);
 
     for (const project of projects) {
-      // 1️⃣ Ensure child DBs (always safe)
       await ensureChildDatabase(
         project.id,
         "فريق الفري لانس",
@@ -208,7 +211,6 @@ async function main() {
         PURCHASES_SCHEMA
       );
 
-      // 2️⃣ Sync status ONLY if manager updated it
       await updateMainProjectStatus(project);
     }
   }
