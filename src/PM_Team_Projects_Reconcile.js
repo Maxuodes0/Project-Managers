@@ -98,19 +98,27 @@ async function main() {
       if (!projectName) continue;
 
       const managerStatus = getSelect(project, "حالة المشروع");
-      const mainStatus = await getMainProjectStatus(projectName);
+      const source = getSelect(project, "آخر مصدر تحديث");
 
+      // ❌ لا نتحرك إلا لو آخر تعديل كان من النظام
+      if (source !== "النظام") continue;
+
+      const mainStatus = await getMainProjectStatus(projectName);
       if (!mainStatus) continue;
 
       // لو متطابقين → لا شيء
       if (managerStatus === mainStatus) continue;
 
-      // غير متطابق → نحدّث مشاريعك من PROJECTS_DB
+      // فرض حالة PROJECTS_DB على مشاريعك
       await notion.pages.update({
         page_id: project.id,
         properties: {
           "حالة المشروع": {
             select: { name: mainStatus },
+          },
+          // نترك المصدر = النظام (توثيق)
+          "آخر مصدر تحديث": {
+            select: { name: "النظام" },
           },
         },
       });
