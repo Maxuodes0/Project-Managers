@@ -1,33 +1,31 @@
 name: Notion Sync
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
 jobs:
-  run-sync:
-    runs-on: ubuntu-latest
+  run-sync:
+    runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Use Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: Install dependencies
-        run: |
-          npm install
+      - name: Install dependencies
+        run: npm install
 
-      - name: Run Notion Sync Script
-        env:
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
-          MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
-          TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
-          HR_DB: ${{ secrets.HR_DB }}
-        run: node src/index.js
-
+      - name: Run Notion Sync Script
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
+          MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
+          TEMPLATE_PAGE_ID: ${{ secrets.TEMPLATE_PAGE_ID }}
+          HR_DB: ${{ secrets.HR_DB }}
+        run: node src/index.js
