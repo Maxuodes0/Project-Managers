@@ -64,9 +64,7 @@ async function fetchAllProjects(db) {
       page_size: 100,
       start_cursor: cursor,
     });
-
     res.push(...r.results);
-
     if (!r.has_more) break;
     cursor = r.next_cursor;
   }
@@ -75,7 +73,7 @@ async function fetchAllProjects(db) {
 }
 
 // ---------------------------------------------------------
-// CREATE INLINE PROJECTS DB (CUSTOM SCHEMA)
+// CREATE INLINE PROJECTS DB (WITH SOURCE FIELD)
 // ---------------------------------------------------------
 async function createInlineProjectsDB(managerPageId) {
   console.log("📦 Creating INLINE Projects DB…");
@@ -85,9 +83,8 @@ async function createInlineProjectsDB(managerPageId) {
     title: [{ type: "text", text: { content: "مشاريعك" } }],
     is_inline: true,
     properties: {
-      "اسم المشروع": {
-        title: {},
-      },
+      "اسم المشروع": { title: {} },
+
       "حالة المشروع": {
         select: {
           options: [
@@ -98,9 +95,18 @@ async function createInlineProjectsDB(managerPageId) {
           ],
         },
       },
+
       "المبلغ المتبقي": {
-        number: {
-          format: "number",
+        number: { format: "number" },
+      },
+
+      // ⭐️ الحقل الذكي
+      "آخر مصدر تحديث": {
+        select: {
+          options: [
+            { name: "مدير المشروع", color: "blue" },
+            { name: "النظام", color: "gray" },
+          ],
         },
       },
     },
@@ -144,7 +150,6 @@ const managersCache = new Map();
 async function getOrCreateManager(relId, stats) {
   const original = await notion.pages.retrieve({ page_id: relId });
   const managerName = getPageTitle(original);
-
   if (!managerName) throw new Error("Manager name missing");
 
   if (managersCache.has(managerName)) {
@@ -178,14 +183,13 @@ async function getOrCreateManager(relId, stats) {
   }
 
   const projectsDbId = await ensureProjectsDB(managerPageId);
-
   const obj = { managerPageId, projectsDbId };
   managersCache.set(managerName, obj);
   return obj;
 }
 
 // ---------------------------------------------------------
-// UPSERT PROJECT (IMPORTANT FIX HERE)
+// UPSERT PROJECT (SEED ONLY)
 // ---------------------------------------------------------
 async function upsertProject({
   managerProjectsDbId,
@@ -208,12 +212,12 @@ async function upsertProject({
     },
   };
 
-  // ✅ الحالة تُنسخ مرة واحدة فقط (عند الإنشاء)
+  // ⬅️ فقط عند الإنشاء
   if (!existing.results.length && projectStatus) {
     props["حالة المشروع"] = { select: { name: projectStatus } };
+    props["آخر مصدر تحديث"] = { select: { name: "النظام" } };
   }
 
-  // المبلغ المتبقي يتحدث دائمًا
   if (remaining !== null) {
     props["المبلغ المتبقي"] = { number: remaining };
   }
@@ -245,23 +249,17 @@ async function processProject(page, stats) {
   const status = getSelect(page, "حالة المشروع");
   const remaining = getFormulaNumber(page, "المبلغ المتبقي");
   const managers = getRelations(page, "مدير المشروع");
-
   if (!managers.length) return;
 
   for (const m of managers) {
-    try {
-      const { projectsDbId } = await getOrCreateManager(m, stats);
-
-      await upsertProject({
-        managerProjectsDbId: projectsDbId,
-        projectName: name,
-        projectStatus: status,
-        remaining,
-        stats,
-      });
-    } catch (err) {
-      console.error("Manager error:", err.message);
-    }
+    const { projectsDbId } = await getOrCreateManager(m, stats);
+    await upsertProject({
+      managerProjectsDbId: projectsDbId,
+      projectName: name,
+      projectStatus: status,
+      remaining,
+      stats,
+    });
   }
 }
 
@@ -269,6 +267,8 @@ async function processProject(page, stats) {
 // MAIN
 // ---------------------------------------------------------
 async function main() {
+  console.log("🚀 STARTING PM_Team_And_Projects");
+
   const stats = {
     total: 0,
     projectsInserted: 0,
@@ -276,16 +276,10 @@ async function main() {
     newManagerPages: 0,
   };
 
-  console.log("🚀 STARTING PM_Team_And_Projects");
-
   const projects = await fetchAllProjects(PROJECTS_DB);
 
   for (const p of projects) {
-    try {
-      await processProject(p, stats);
-    } catch (err) {
-      console.error("Project error:", err.message);
-    }
+    await processProject(p, stats);
   }
 
   console.log("✅ DONE");
