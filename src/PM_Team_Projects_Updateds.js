@@ -98,10 +98,11 @@ const PURCHASES_SCHEMA = {
   "نوع المصروف": { title: {} },
   "تاريخ": { date: {} },
   "المبلغ": { number: { format: "number" } },
-"المبلغ بدون ضريبة": {
-    formula: {
-      expression: "round(prop(\"المبلغ\") / 1.15, 2)"
-    }
+  "المبلغ بدون ضريبة": {
+  formula: {
+    expression: "prop(\"المبلغ\") / 1.15"
+  }
+}
   },  "إرفاق الفاتورة": { files: {} },
   "دافع المبلغ": {
     select: {
