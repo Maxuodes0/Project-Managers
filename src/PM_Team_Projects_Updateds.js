@@ -112,9 +112,17 @@ const PURCHASES_SCHEMA = {
 
 // ---------------------------------------------------------
 // UPDATE PROJECT STATUS IN MAIN DB
+// (ONLY IF SOURCE = مدير المشروع)
 // ---------------------------------------------------------
-async function updateMainProjectStatus(projectName, statusFromManager) {
-  if (!statusFromManager) return;
+async function updateMainProjectStatus(projectPage) {
+  const projectName = getTitle(projectPage, "اسم المشروع");
+  const statusFromManager = getSelect(projectPage, "حالة المشروع");
+  const source = getSelect(projectPage, "آخر مصدر تحديث");
+
+  if (!projectName || !statusFromManager) return;
+
+  // ❌ لا نتحرك إلا إذا التعديل من مدير المشروع
+  if (source !== "مدير المشروع") return;
 
   const res = await notion.databases.query({
     database_id: PROJECTS_DB,
@@ -132,6 +140,7 @@ async function updateMainProjectStatus(projectName, statusFromManager) {
 
   if (currentStatus === statusFromManager) return;
 
+  // تحديث الحالة في PROJECTS_DB
   await notion.pages.update({
     page_id: page.id,
     properties: {
@@ -141,7 +150,19 @@ async function updateMainProjectStatus(projectName, statusFromManager) {
     },
   });
 
-  console.log(`🔄 Updated main project "${projectName}" → ${statusFromManager}`);
+  // توقيع التعديل كنظام في مشاريعك
+  await notion.pages.update({
+    page_id: projectPage.id,
+    properties: {
+      "آخر مصدر تحديث": {
+        select: { name: "النظام" },
+      },
+    },
+  });
+
+  console.log(
+    `🔄 Updated main DB from manager: "${projectName}" → ${statusFromManager}`
+  );
 }
 
 // ---------------------------------------------------------
@@ -170,12 +191,7 @@ async function main() {
     const projects = await listAllPages(projectsDbBlock.id);
 
     for (const project of projects) {
-      const projectName = getTitle(project, "اسم المشروع");
-      const projectStatus = getSelect(project, "حالة المشروع");
-
-      if (!projectName) continue;
-
-      // 1️⃣ Ensure child DBs
+      // 1️⃣ Ensure child DBs (always safe)
       await ensureChildDatabase(
         project.id,
         "فريق الفرعي لانس",
@@ -188,8 +204,8 @@ async function main() {
         PURCHASES_SCHEMA
       );
 
-      // 2️⃣ Sync status back to main PROJECTS_DB
-      await updateMainProjectStatus(projectName, projectStatus);
+      // 2️⃣ Sync status ONLY if manager updated it
+      await updateMainProjectStatus(project);
     }
   }
 
