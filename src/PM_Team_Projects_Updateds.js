@@ -87,7 +87,7 @@ const FREELANCE_SCHEMA = {
       single_property: {},
     },
   },
-
+"ملاحطات": { title: {} }
   "ملاحظات": { rich_text: {} },
 
   "نوع الصرف": {
