@@ -36,6 +36,8 @@ jobs:
           PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
           MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
           HR_DB: ${{ secrets.HR_DB }}
+          FREELANCERS: ${{ secrets.FREELANCERS }}
+
 
       # -------------------------------------------------
       # 2️⃣ PM Team Projects Updates
