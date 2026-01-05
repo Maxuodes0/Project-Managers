@@ -10,8 +10,9 @@ dotenv.config();
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const MANAGERS_DB = process.env.MANAGERS_DB;
 const PROJECTS_DB = process.env.PROJECTS_DB;
+const FREELANCERS_DB = process.env.FREELANCERS;
 
-if (!NOTION_TOKEN || !MANAGERS_DB || !PROJECTS_DB) {
+if (!NOTION_TOKEN || !MANAGERS_DB || !PROJECTS_DB || !FREELANCERS_DB) {
   console.error("❌ Missing ENV variables");
   process.exit(1);
 }
@@ -41,9 +42,9 @@ async function listAllPages(databaseId) {
 }
 
 function getTitle(page, prop) {
-  return page.properties[prop]?.title
-    ?.map(t => t.plain_text)
-    .join("") || null;
+  return (
+    page.properties[prop]?.title?.map((t) => t.plain_text).join("") || null
+  );
 }
 
 function getSelect(page, prop) {
@@ -60,7 +61,7 @@ async function ensureChildDatabase(pageId, title, properties) {
   });
 
   const exists = blocks.results.find(
-    b => b.type === "child_database" && b.child_database?.title === title
+    (b) => b.type === "child_database" && b.child_database?.title === title
   );
 
   if (exists) return exists.id;
@@ -80,11 +81,30 @@ async function ensureChildDatabase(pageId, title, properties) {
 // SCHEMAS
 // ---------------------------------------------------------
 const FREELANCE_SCHEMA = {
-  "اسم الشخص": { title: {} },
-  "نوع الصرف": { rich_text: {} },
-  "العمل": { rich_text: {} },
+  "اسم الفريلانسر": {
+    relation: {
+      database_id: FREELANCERS_DB,
+      single_property: {},
+    },
+  },
+
+  "ملاحظات": { rich_text: {} },
+
+  "نوع الصرف": {
+    select: {
+      options: [
+        { name: "كاش", color: "green" },
+        { name: "تحويل", color: "yellow" },
+      ],
+    },
+  },
+
+  "الدور في المشروع": { rich_text: {} },
+
   "المبلغ": { number: { format: "number" } },
+
   "آيبان": { rich_text: {} },
+
   "حالة الدفع": {
     select: {
       options: [
@@ -94,17 +114,17 @@ const FREELANCE_SCHEMA = {
       ],
     },
   },
+
   "إيصال": { files: {} },
 };
 
 const PURCHASES_SCHEMA = {
   "نوع المصروف": { title: {} },
+
   "تاريخ": { date: {} },
 
-  // 👈 المستخدم يدخل المبلغ شامل الضريبة
   "المبلغ": { number: { format: "number" } },
 
-  // 👈 نخزنه كرقم فقط (الحساب يتم في سكربت التكاليف)
   "المبلغ بدون ضريبة": { number: { format: "number" } },
 
   "إرفاق الفاتورة": { files: {} },
@@ -121,7 +141,6 @@ const PURCHASES_SCHEMA = {
 
 // ---------------------------------------------------------
 // UPDATE PROJECT STATUS IN MAIN DB
-// (ONLY IF SOURCE = مدير المشروع)
 // ---------------------------------------------------------
 async function updateMainProjectStatus(projectPage) {
   const projectName = getTitle(projectPage, "اسم المشروع");
@@ -129,8 +148,6 @@ async function updateMainProjectStatus(projectPage) {
   const source = getSelect(projectPage, "آخر مصدر تحديث");
 
   if (!projectName || !statusFromManager) return;
-
-  // ❌ لا نتحرك إلا إذا التعديل من مدير المشروع
   if (source !== "مدير المشروع") return;
 
   const res = await notion.databases.query({
@@ -149,7 +166,6 @@ async function updateMainProjectStatus(projectPage) {
 
   if (currentStatus === statusFromManager) return;
 
-  // تحديث الحالة في PROJECTS_DB
   await notion.pages.update({
     page_id: page.id,
     properties: {
@@ -159,7 +175,6 @@ async function updateMainProjectStatus(projectPage) {
     },
   });
 
-  // توقيع التعديل كنظام
   await notion.pages.update({
     page_id: projectPage.id,
     properties: {
@@ -169,9 +184,7 @@ async function updateMainProjectStatus(projectPage) {
     },
   });
 
-  console.log(
-    `🔄 Updated main DB from manager: "${projectName}" → ${statusFromManager}`
-  );
+  console.log(`🔄 Updated project "${projectName}" → ${statusFromManager}`);
 }
 
 // ---------------------------------------------------------
@@ -191,7 +204,7 @@ async function main() {
     });
 
     const projectsDbBlock = blocks.results.find(
-      b => b.type === "child_database" && b.child_database?.title === "مشاريعك"
+      (b) => b.type === "child_database" && b.child_database?.title === "مشاريعك"
     );
 
     if (!projectsDbBlock) continue;
@@ -218,7 +231,7 @@ async function main() {
   console.log("✅ PM_Team_Projects_Updateds finished");
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error("❌ Error:", err);
   process.exit(1);
 });
