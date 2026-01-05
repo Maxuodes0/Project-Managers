@@ -15,14 +15,23 @@ jobs:
       cancel-in-progress: true
 
     steps:
+      # ---------------------------------------------
+      # Checkout
+      # ---------------------------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      # ---------------------------------------------
+      # Node
+      # ---------------------------------------------
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
+      # ---------------------------------------------
+      # Install deps
+      # ---------------------------------------------
       - name: Install dependencies
         run: npm install
 
@@ -38,7 +47,6 @@ jobs:
           HR_DB: ${{ secrets.HR_DB }}
           FREELANCERS: ${{ secrets.FREELANCERS }}
 
-
       # -------------------------------------------------
       # 2️⃣ PM Team Projects Updates
       #    (مشاريعك ➜ PROJECTS_DB)
@@ -49,6 +57,7 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           PROJECTS_DB: ${{ secrets.PROJECTS_DB }}
           MANAGERS_DB: ${{ secrets.MANAGERS_DB }}
+          FREELANCERS: ${{ secrets.FREELANCERS }}
 
       # -------------------------------------------------
       # 3️⃣ PM Team Projects Reconcile
