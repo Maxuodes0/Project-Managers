@@ -42,13 +42,82 @@ async function listAllPages(databaseId) {
 }
 
 function getTitle(page, prop) {
-  return (
-    page.properties[prop]?.title?.map((t) => t.plain_text).join("") || null
-  );
+  return page.properties[prop]?.title?.map((t) => t.plain_text).join("") || null;
 }
 
 function getSelect(page, prop) {
   return page.properties[prop]?.select?.name || null;
+}
+
+// ✅ NEW: Rich text reader (for IBAN fields)
+function getRichText(page, prop) {
+  const rt = page.properties?.[prop]?.rich_text;
+  if (!Array.isArray(rt)) return null;
+  const v = rt.map((t) => t.plain_text).join("").trim();
+  return v || null;
+}
+
+// ✅ NEW: Relation IDs reader
+function getRelationIds(page, prop) {
+  const rel = page.properties?.[prop]?.relation;
+  if (!Array.isArray(rel)) return [];
+  return rel.map((r) => r.id).filter(Boolean);
+}
+
+// ✅ NEW: Rich text setter
+function setRichText(value) {
+  return { rich_text: [{ type: "text", text: { content: value } }] };
+}
+
+// ---------------------------------------------------------
+// IBAN AUTO-SYNC CONFIG (from FREELANCERS_DB -> Team DB)
+// ---------------------------------------------------------
+const FREELANCER_IBAN_PROP = "ايبان البنك"; // in FREELANCERS_DB (Rich text)
+const TEAM_IBAN_PROP = "آيبان"; // in "فريق الفري لانس" (Rich text)
+const TEAM_FREELANCER_REL_PROP = "اسم الفريلانسر"; // Relation in team DB
+
+// Cache to reduce Notion API calls
+const freelancerIbanCache = new Map(); // key: freelancerPageId, value: iban string|null
+
+async function getFreelancerIban(freelancerPageId) {
+  if (freelancerIbanCache.has(freelancerPageId)) {
+    return freelancerIbanCache.get(freelancerPageId);
+  }
+
+  const pg = await notion.pages.retrieve({ page_id: freelancerPageId });
+  const iban = getRichText(pg, FREELANCER_IBAN_PROP);
+  freelancerIbanCache.set(freelancerPageId, iban);
+  return iban;
+}
+
+// Sync IBAN into each row of the team freelance DB
+async function syncIbanIntoFreelanceRows(freelanceDbId) {
+  const rows = await listAllPages(freelanceDbId);
+
+  for (const row of rows) {
+    const freelancerIds = getRelationIds(row, TEAM_FREELANCER_REL_PROP);
+    if (!freelancerIds.length) continue;
+
+    // If multiple freelancers are linked, take the first one
+    const freelancerId = freelancerIds[0];
+
+    const ibanFromFreelancer = await getFreelancerIban(freelancerId);
+    if (!ibanFromFreelancer) continue;
+
+    const currentIban = getRichText(row, TEAM_IBAN_PROP);
+
+    // No update if identical
+    if (currentIban === ibanFromFreelancer) continue;
+
+    await notion.pages.update({
+      page_id: row.id,
+      properties: {
+        [TEAM_IBAN_PROP]: setRichText(ibanFromFreelancer),
+      },
+    });
+
+    console.log(`🏦 Synced IBAN for row ${row.id}`);
+  }
 }
 
 // ---------------------------------------------------------
@@ -124,6 +193,7 @@ const FREELANCE_SCHEMA = {
 
   "المبلغ": { number: { format: "number" } },
 
+  // ✅ will be auto-filled by syncIbanIntoFreelanceRows() from FREELANCERS_DB -> "ايبان البنك"
   "آيبان": { rich_text: {} },
 
   "حالة الدفع": {
@@ -138,7 +208,6 @@ const FREELANCE_SCHEMA = {
 
   "إيصال": { files: {} },
 };
-
 
 const PURCHASES_SCHEMA = {
   "نوع المصروف": { title: {} },
@@ -234,18 +303,20 @@ async function main() {
     const projects = await listAllPages(projectsDbBlock.id);
 
     for (const project of projects) {
-      await ensureChildDatabase(
+      // ✅ Ensure "فريق الفري لانس" exists and get its DB id
+      const freelanceDbId = await ensureChildDatabase(
         project.id,
         "فريق الفري لانس",
         FREELANCE_SCHEMA
       );
 
-      await ensureChildDatabase(
-        project.id,
-        "المشتريات",
-        PURCHASES_SCHEMA
-      );
+      // ✅ Sync IBAN from FREELANCERS_DB ("ايبان البنك") into team DB field "آيبان"
+      await syncIbanIntoFreelanceRows(freelanceDbId);
 
+      // ✅ Ensure "المشتريات" exists
+      await ensureChildDatabase(project.id, "المشتريات", PURCHASES_SCHEMA);
+
+      // ✅ Sync project status (manager -> main)
       await updateMainProjectStatus(project);
     }
   }
