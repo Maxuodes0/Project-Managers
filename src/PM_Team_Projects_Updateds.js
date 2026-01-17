@@ -87,7 +87,9 @@ const FREELANCE_SCHEMA = {
       single_property: {},
     },
   },
-"ملاحطات": { title: {} },
+
+  "ملاحطات": { title: {} },
+
   "نوع الصرف": {
     select: {
       options: [
@@ -98,27 +100,27 @@ const FREELANCE_SCHEMA = {
   },
 
   "الدور في المشروع": {
-  select: {
-    options: [
-      { name: "فوتو – Photography", color: "blue" },
-      { name: "فيديو – Video", color: "green" },
-      { name: "مونتير – Video Editing", color: "yellow" },
-      { name: "DIT – Digital Imaging Technician", color: "gray" },
-      { name: "هايبر لابس – Hyperlapse", color: "purple" },
-      { name: "تايم لابس – Timelapse", color: "pink" },
-      { name: "ترجمة – Translation", color: "brown" },
-      { name: "فويس أوفر – Voice Over", color: "orange" },
-      { name: "درون – Drone", color: "red" },
-      { name: "FPV – FPV Drone", color: "default" },
-      { name: "فيديو & مونتير – Video & Editing", color: "green" },
-      { name: "محرر صور – Photo Editor", color: "blue" },
-      { name: "جرافيكس – Graphics", color: "purple" },
-      { name: "تصميم – Design", color: "pink" },
-      { name: "سيناريو – Script / Scriptwriting", color: "yellow" },
-      { name: "مساعد – Assistant", color: "gray" },
-    ],
+    select: {
+      options: [
+        { name: "فوتو – Photography", color: "blue" },
+        { name: "فيديو – Video", color: "green" },
+        { name: "مونتير – Video Editing", color: "yellow" },
+        { name: "DIT – Digital Imaging Technician", color: "gray" },
+        { name: "هايبر لابس – Hyperlapse", color: "purple" },
+        { name: "تايم لابس – Timelapse", color: "pink" },
+        { name: "ترجمة – Translation", color: "brown" },
+        { name: "فويس أوفر – Voice Over", color: "orange" },
+        { name: "درون – Drone", color: "red" },
+        { name: "FPV – FPV Drone", color: "default" },
+        { name: "فيديو & مونتير – Video & Editing", color: "green" },
+        { name: "محرر صور – Photo Editor", color: "blue" },
+        { name: "جرافيكس – Graphics", color: "purple" },
+        { name: "تصميم – Design", color: "pink" },
+        { name: "سيناريو – Script / Scriptwriting", color: "yellow" },
+        { name: "مساعد – Assistant", color: "gray" },
+      ],
+    },
   },
- },
 
   "المبلغ": { number: { format: "number" } },
 
@@ -136,6 +138,7 @@ const FREELANCE_SCHEMA = {
 
   "إيصال": { files: {} },
 };
+
 
 const PURCHASES_SCHEMA = {
   "نوع المصروف": { title: {} },
