@@ -118,7 +118,7 @@ const FREELANCE_SCHEMA = {
       { name: "مساعد – Assistant", color: "gray" },
     ],
   },
-};
+ },
 
   "المبلغ": { number: { format: "number" } },
 
